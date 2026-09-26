@@ -1,6 +1,6 @@
 import pandas as pd
 
-from loaders import iter_target_dates, weibo_loader, STANDARD_COLUMNS
+from loaders import iter_target_dates, weibo_loader, twitter_loader, STANDARD_COLUMNS
 
 
 def test_iter_target_dates_single_month():
@@ -60,6 +60,48 @@ def test_weibo_loader_skips_missing_files(tmp_path):
     result = weibo_loader(
         input_dir=str(tmp_path),
         filename_pattern="{date}.parquet",
+        start_date="2024-03-01",
+        end_date="2024-03-05",
+        target_days=[1, 10, 20],
+    )
+    assert list(result.columns) == STANDARD_COLUMNS
+    assert len(result) == 0
+
+
+def test_twitter_loader_reads_matching_dates_and_parses_created_at(tmp_path):
+    day1 = pd.DataFrame({
+        "id": ["t1", "t2"],
+        "text": ["AI is great", "AI is scary"],
+        "likeCount": [10, 0],
+        "author.id": ["a1", "a2"],
+        "createdAt": [
+            "Fri Mar 01 12:00:00 +0000 2024",
+            "Fri Mar 01 23:59:00 +0000 2024",
+        ],
+    })
+    day1.to_parquet(tmp_path / "tweets_2024-03-01.parquet", index=False)
+
+    result = twitter_loader(
+        input_dir=str(tmp_path),
+        filename_pattern="tweets_{date}.parquet",
+        start_date="2024-03-01",
+        end_date="2024-03-05",
+        target_days=[1, 10, 20],
+    )
+
+    assert list(result.columns) == STANDARD_COLUMNS
+    assert set(result["id"]) == {"t1", "t2"}
+    row = result[result["id"] == "t1"].iloc[0]
+    assert row["text"] == "AI is great"
+    assert row["weight_raw"] == 10
+    assert row["user_id"] == "a1"
+    assert row["date"] == "2024-03-01"
+
+
+def test_twitter_loader_skips_missing_files(tmp_path):
+    result = twitter_loader(
+        input_dir=str(tmp_path),
+        filename_pattern="tweets_{date}.parquet",
         start_date="2024-03-01",
         end_date="2024-03-05",
         target_days=[1, 10, 20],

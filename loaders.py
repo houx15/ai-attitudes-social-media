@@ -53,3 +53,35 @@ def weibo_loader(
     if not frames:
         return pd.DataFrame(columns=STANDARD_COLUMNS)
     return pd.concat(frames, ignore_index=True)
+
+
+def twitter_loader(
+    input_dir: str,
+    filename_pattern: str,
+    start_date: str,
+    end_date: str,
+    target_days: List[int],
+) -> pd.DataFrame:
+    dates = iter_target_dates(start_date, end_date, target_days)
+    frames = []
+    for date_str in dates:
+        file_path = os.path.join(input_dir, filename_pattern.format(date=date_str))
+        if not os.path.exists(file_path):
+            continue
+        df = pd.read_parquet(
+            file_path, columns=["id", "text", "likeCount", "author.id", "createdAt"]
+        )
+        df["id"] = df["id"].astype(str)
+        # Twitter date = parsed from the post's own createdAt (UTC), same as
+        # the current batch_sentiment_analysis.py behavior.
+        df["date"] = df["createdAt"].apply(
+            lambda x: datetime.strptime(x, "%a %b %d %H:%M:%S +0000 %Y").strftime(
+                "%Y-%m-%d"
+            )
+        )
+        df = df.rename(columns={"likeCount": "weight_raw", "author.id": "user_id"})
+        df["user_id"] = df["user_id"].astype(str)
+        frames.append(df[STANDARD_COLUMNS])
+    if not frames:
+        return pd.DataFrame(columns=STANDARD_COLUMNS)
+    return pd.concat(frames, ignore_index=True)
