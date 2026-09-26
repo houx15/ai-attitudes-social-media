@@ -1,0 +1,7 @@
+pandas
+pyarrow
+openai
+fire
+tqdm
+matplotlib
+pytest

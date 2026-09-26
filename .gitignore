@@ -1,0 +1,8 @@
+config.py
+output/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store
+venv/
+.venv/
