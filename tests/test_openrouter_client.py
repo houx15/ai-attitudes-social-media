@@ -208,3 +208,185 @@ def test_analyze_many_guards_against_exception_from_client(tmp_path):
     # Row b should have NaN opinion (from the exception)
     b_row = saved[saved["id"] == "b"]
     assert b_row["opinion"].isna().all()
+
+
+# --- Final-review fix wave ---
+
+import pytest
+
+from openrouter_client import load_processed_ids
+
+
+def test_analyze_many_retries_row_with_empty_opinion_on_resume(tmp_path):
+    # (B) a row that failed on a previous run must be re-sent, not skipped
+    results_path = tmp_path / "results.csv"
+    results_path.write_text(
+        "id,opinion,prompt_tokens,completion_tokens,cached_tokens\n"
+        "a,,0,0,0\n"
+        "b,1,1,1,0\n"
+    )
+    df = pd.DataFrame({"id": ["a", "b"], "text": ["text a", "text b"]})
+    client = CountingFakeClient()
+
+    summary = analyze_many(client, df, str(results_path), max_workers=1)
+
+    assert client.calls == ["text a"]
+    assert summary["skipped"] == 1
+    assert summary["completed"] == 1
+    assert load_processed_ids(str(results_path)) == {"a", "b"}
+
+
+def test_load_processed_ids_only_counts_valid_opinions(tmp_path):
+    results_path = tmp_path / "results.csv"
+    results_path.write_text(
+        "id,opinion,prompt_tokens,completion_tokens,cached_tokens\n"
+        "a,,0,0,0\n"
+        "b,2,1,1,0\n"
+        "c,cannot tell,1,1,0\n"
+        "d,-1.0,1,1,0\n"
+        "e,garbage,1,1,0\n"
+        "f,7,1,1,0\n"
+    )
+    assert load_processed_ids(str(results_path)) == {"b", "c", "d"}
+
+
+def test_backoff_base_seconds_is_configurable(monkeypatch):
+    # (C) backoff is (attempt + 1) * backoff_base_seconds
+    import openrouter_client
+
+    sleeps = []
+    monkeypatch.setattr(openrouter_client.time, "sleep", lambda s: sleeps.append(s))
+
+    class AlwaysFails:
+        def __init__(self):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+        def _create(self, model, messages):
+            raise ConnectionError("always fails")
+
+    client = OpenRouterClient(
+        api_key="k",
+        base_url="https://openrouter.ai/api/v1",
+        model="m",
+        max_retries=3,
+        backoff_base_seconds=2.0,
+        client=AlwaysFails(),
+    )
+    client.analyze_one("x")
+    assert sleeps == [2.0, 4.0, 6.0]
+
+
+def test_backoff_default_stays_small(monkeypatch):
+    import openrouter_client
+
+    sleeps = []
+    monkeypatch.setattr(openrouter_client.time, "sleep", lambda s: sleeps.append(s))
+    fake = FakeOpenAI(responses=[_fake_response('{"opinion": 2}')], error_then_success=True)
+    client = OpenRouterClient(
+        api_key="k", base_url="https://openrouter.ai/api/v1", model="m", client=fake
+    )
+    client.analyze_one("x")
+    assert sleeps == [pytest.approx(0.01)]
+
+
+@pytest.mark.parametrize(
+    "content, expected",
+    [
+        ('{"opinion": 2}', 2),
+        ('{"opinion": 2.0}', 2),
+        ('{"opinion": "2"}', 2),
+        ('{"opinion": "-1"}', -1),
+        ('{"opinion": 0}', 0),
+        ('{"opinion": "cannot tell"}', "cannot tell"),
+        ('{"opinion": [1, 2]}', None),
+        ('{"opinion": 99}', None),
+        ('{"opinion": 1.5}', None),
+        ('{"opinion": "positive"}', None),
+        ('{"opinion": {"x": 1}}', None),
+        ('{"opinion": true}', None),
+        ('{"opinion": null}', None),
+        ('{"other": 1}', None),
+    ],
+)
+def test_analyze_one_validates_opinion(content, expected):
+    # (D) only -2..2 or "cannot tell" survive; anything else is a parse failure
+    fake = FakeOpenAI(responses=[_fake_response(content)])
+    client = OpenRouterClient(
+        api_key="k", base_url="https://openrouter.ai/api/v1", model="m", client=fake
+    )
+    assert client.analyze_one("x")["opinion"] == expected
+
+
+def test_malformed_model_output_does_not_corrupt_results_csv(tmp_path):
+    # (D) end-to-end: a real OpenRouterClient fed an array / out-of-range opinion
+    # must not produce a broken CSV, and later reads must still work.
+    from prepare_data import clean
+
+    class ByTextOpenAI:
+        def __init__(self, content_by_text):
+            self._content_by_text = content_by_text
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+        def _create(self, model, messages):
+            user_text = messages[-1]["content"]
+            for key, content in self._content_by_text.items():
+                if key in user_text:
+                    return _fake_response(content)
+            raise AssertionError(user_text)
+
+    fake = ByTextOpenAI({
+        "post-a": '{"opinion": 1}',
+        "post-b": '{"opinion": [1, 2]}',
+        "post-c": '{"opinion": 1000}',
+        "post-d": '{"opinion": "a,\\"quoted\\"\\nvalue"}',
+    })
+    client = OpenRouterClient(
+        api_key="k", base_url="https://openrouter.ai/api/v1", model="m", client=fake
+    )
+
+    input_dir = tmp_path / "weibo"
+    input_dir.mkdir()
+    pd.DataFrame({
+        "weibo_id": ["a", "b", "c", "d"],
+        "user_id": ["u1", "u2", "u3", "u4"],
+        "weibo_content": ["post-a", "post-b", "post-c", "post-d"],
+        "zan": [0, 0, 0, 0],
+    }).to_parquet(input_dir / "2024-03-01.parquet", index=False)
+
+    results_path = tmp_path / "results.csv"
+    df = pd.DataFrame({"id": ["a", "b", "c", "d"], "text": ["post-a", "post-b", "post-c", "post-d"]})
+    summary = analyze_many(client, df, str(results_path), max_workers=2)
+    assert summary["completed"] == 1
+    assert summary["failed"] == 3
+
+    saved = pd.read_csv(results_path, dtype=str)
+    assert list(saved.columns) == ["id", "opinion", "prompt_tokens", "completion_tokens", "cached_tokens"]
+    assert len(saved) == 4
+    assert load_processed_ids(str(results_path)) == {"a"}
+
+    result = clean(
+        platform="weibo",
+        input_dir=str(input_dir),
+        filename_pattern="{date}.parquet",
+        start_date="2024-03-01",
+        end_date="2024-03-05",
+        target_days=[1, 10, 20],
+        opinion_results_path=str(results_path),
+        output_path=str(tmp_path / "daily.parquet"),
+    )
+    assert result.iloc[0]["avg_opinion"] == pytest.approx(1.0)
+
+
+def test_analyze_many_csv_write_is_quoted_even_for_unvalidated_values(tmp_path):
+    # (D) even if an injected client bypasses validation, csv.writer must keep
+    # the file parseable (commas / quotes / newlines are quoted, not raw).
+    df = pd.DataFrame({"id": ["a", "b"], "text": ["text a", "text b"]})
+    client = CountingFakeClient(opinion_by_text={"text b": 'x,"y"\nz', "text a": [1, 2]})
+    results_path = tmp_path / "results.csv"
+
+    analyze_many(client, df, str(results_path), max_workers=1)
+
+    saved = pd.read_csv(results_path, dtype=str)
+    assert len(saved) == 2
+    assert saved.set_index("id").loc["b", "opinion"] == 'x,"y"\nz'
+    assert load_processed_ids(str(results_path)) == set()

@@ -3,16 +3,17 @@
 Usage:
     python prepare_data.py clean --platform weibo
     python prepare_data.py clean --platform twitter
+    python prepare_data.py clean --platform weibo --start_date 2024-03-01 --end_date 2024-03-31 --target_days 1,10,20
     python prepare_data.py export
 """
 
 from pathlib import Path
-from typing import List
+from typing import List, Optional, Sequence, Union
 
 import fire
 import pandas as pd
 
-from loaders import twitter_loader, weibo_loader
+from loaders import parse_target_days, twitter_loader, weibo_loader
 
 LOADERS = {"weibo": weibo_loader, "twitter": twitter_loader}
 
@@ -34,10 +35,20 @@ def clean(
     meta_df = loader(input_dir, filename_pattern, start_date, end_date, target_days)
 
     opinions_df = pd.read_csv(opinion_results_path, dtype={"id": str})
+    # A retried id is appended again to the results CSV; the latest write wins
+    # so each post counts exactly once.
+    opinions_df = opinions_df.drop_duplicates(subset=["id"], keep="last")
     merged = meta_df.merge(opinions_df, on="id", how="inner")
+    n_matched = len(merged)
 
     merged["opinion"] = pd.to_numeric(merged["opinion"], errors="coerce")
     merged = merged.dropna(subset=["opinion"])
+    print(
+        f"Coverage for {platform} ({start_date}..{end_date}, days {list(target_days)}): "
+        f"{len(meta_df)} metadata rows loaded, "
+        f"{n_matched} matched an opinion result, "
+        f"{len(merged)} with a valid numeric opinion"
+    )
     merged["weight"] = pd.to_numeric(merged["weight_raw"], errors="coerce").fillna(0) + 1
 
     daily_avg = merged.groupby("date")["opinion"].mean().reset_index()
@@ -73,7 +84,12 @@ def clean(
     return result
 
 
-def _clean_cli(platform: str):
+def _clean_cli(
+    platform: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    target_days: Optional[Union[str, int, Sequence[int]]] = None,
+):
     import config
 
     input_dir = config.WEIBO_INPUT_DIR if platform == "weibo" else config.TWITTER_INPUT_DIR
@@ -89,9 +105,11 @@ def _clean_cli(platform: str):
         platform=platform,
         input_dir=input_dir,
         filename_pattern=filename_pattern,
-        start_date=config.START_DATE,
-        end_date=config.END_DATE,
-        target_days=config.TARGET_DAYS,
+        start_date=start_date or config.START_DATE,
+        end_date=end_date or config.END_DATE,
+        target_days=(
+            parse_target_days(target_days) if target_days is not None else config.TARGET_DAYS
+        ),
         opinion_results_path=opinion_results_path,
         output_path=output_path,
     )

@@ -1,19 +1,47 @@
 """Concurrent OpenRouter chat-completions client used by both platforms
 (replaces the old OpenAI Batch API + hosted-prompt mechanism)."""
 
+import csv
 import json
 import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 import pandas as pd
 
 from prompts import SYSTEM_PROMPT, build_user_message
 
 logger = logging.getLogger(__name__)
+
+VALID_NUMERIC_OPINIONS = {-2, -1, 0, 1, 2}
+CANNOT_TELL = "cannot tell"
+RESULTS_HEADER = ["id", "opinion", "prompt_tokens", "completion_tokens", "cached_tokens"]
+
+
+def normalize_opinion(value: Any) -> Optional[Union[int, str]]:
+    """Return the canonical opinion (-2..2 as int, or "cannot tell"), or None if
+    the value is not a valid label. Numeric-looking values (2, 2.0, "2") are
+    normalized to int; anything else (lists, dicts, bools, out-of-range numbers,
+    arbitrary strings) is rejected."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.lower() == CANNOT_TELL:
+            return CANNOT_TELL
+        try:
+            value = float(stripped)
+        except ValueError:
+            return None
+    if isinstance(value, (int, float)):
+        if value != value or not float(value).is_integer():  # NaN or non-integer
+            return None
+        as_int = int(value)
+        return as_int if as_int in VALID_NUMERIC_OPINIONS else None
+    return None
 
 
 class OpenRouterClient:
@@ -25,6 +53,7 @@ class OpenRouterClient:
         max_retries: int = 3,
         timeout: int = 60,
         client=None,
+        backoff_base_seconds: float = 0.01,
     ):
         if client is not None:
             self.client = client
@@ -34,6 +63,10 @@ class OpenRouterClient:
             self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
         self.model = model
         self.max_retries = max_retries
+        # Retry sleep is (attempt + 1) * backoff_base_seconds. The small default
+        # keeps tests fast; production callers (run_analysis.main) pass a
+        # realistic value from config.
+        self.backoff_base_seconds = backoff_base_seconds
 
     def analyze_one(self, text: str) -> Dict:
         last_error = None
@@ -59,17 +92,17 @@ class OpenRouterClient:
                 json_end = response_text.rfind("}") + 1
                 if json_start != -1 and json_end > json_start:
                     try:
-                        opinion = json.loads(response_text[json_start:json_end]).get(
-                            "opinion"
-                        )
+                        parsed = json.loads(response_text[json_start:json_end])
                     except json.JSONDecodeError:
-                        opinion = None
+                        parsed = None
+                    if isinstance(parsed, dict):
+                        opinion = normalize_opinion(parsed.get("opinion"))
 
                 return {"opinion": opinion, **token_stats}
             except Exception as e:
                 last_error = e
                 if attempt < self.max_retries:
-                    time.sleep((attempt + 1) * 0.01)
+                    time.sleep((attempt + 1) * self.backoff_base_seconds)
 
         logger.error(f"analyze_one failed after {self.max_retries} retries: {last_error}")
         return {
@@ -84,10 +117,14 @@ def load_processed_ids(results_path: str) -> set:
     path = Path(results_path)
     if not path.exists() or path.stat().st_size == 0:
         return set()
-    df = pd.read_csv(path, dtype=str)
-    if "id" not in df.columns:
+    df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    if "id" not in df.columns or "opinion" not in df.columns:
         return set()
-    return set(df["id"].dropna().unique())
+    # Only rows with a valid opinion count as done; failed rows (empty or
+    # invalid opinion) are retried on the next run instead of being dropped.
+    valid = df["opinion"].map(normalize_opinion).notna()
+    ids = df.loc[valid, "id"]
+    return set(ids[ids != ""].unique())
 
 
 def analyze_many(
@@ -128,12 +165,18 @@ def analyze_many(
         nonlocal write_header
         with write_lock:
             with open(path, "a", encoding="utf-8", newline="") as f:
+                writer = csv.writer(f)
                 if write_header:
-                    f.write("id,opinion,prompt_tokens,completion_tokens,cached_tokens\n")
+                    writer.writerow(RESULTS_HEADER)
                     write_header = False
-                f.write(
-                    f'{row_id},{opinion_value},{result["prompt_tokens"]},'
-                    f'{result["completion_tokens"]},{result["cached_tokens"]}\n'
+                writer.writerow(
+                    [
+                        row_id,
+                        opinion_value,
+                        result["prompt_tokens"],
+                        result["completion_tokens"],
+                        result["cached_tokens"],
+                    ]
                 )
         return result
 

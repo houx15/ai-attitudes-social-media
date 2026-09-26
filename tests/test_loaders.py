@@ -108,3 +108,96 @@ def test_twitter_loader_skips_missing_files(tmp_path):
     )
     assert list(result.columns) == STANDARD_COLUMNS
     assert len(result) == 0
+
+
+# --- Final-review fix wave: dedup on id (A) and empty/null text (J) ---
+
+
+def test_weibo_loader_drops_duplicate_ids(tmp_path):
+    pd.DataFrame({
+        "weibo_id": ["w1", "w1", "w2"],
+        "user_id": ["u1", "u1", "u2"],
+        "weibo_content": ["AI is great", "AI is great", "AI is scary"],
+        "zan": [0, 0, 0],
+    }).to_parquet(tmp_path / "2024-03-01.parquet", index=False)
+
+    result = weibo_loader(
+        input_dir=str(tmp_path),
+        filename_pattern="{date}.parquet",
+        start_date="2024-03-01",
+        end_date="2024-03-05",
+        target_days=[1, 10, 20],
+    )
+
+    assert len(result) == 2
+    assert sorted(result["id"]) == ["w1", "w2"]
+
+
+def test_twitter_loader_drops_duplicate_ids(tmp_path):
+    pd.DataFrame({
+        "id": ["t1", "t1", "t2"],
+        "text": ["AI is great", "AI is great", "AI is scary"],
+        "likeCount": [0, 0, 0],
+        "author.id": ["a1", "a1", "a2"],
+        "createdAt": ["Fri Mar 01 12:00:00 +0000 2024"] * 3,
+    }).to_parquet(tmp_path / "tweets_2024-03-01.parquet", index=False)
+
+    result = twitter_loader(
+        input_dir=str(tmp_path),
+        filename_pattern="tweets_{date}.parquet",
+        start_date="2024-03-01",
+        end_date="2024-03-05",
+        target_days=[1, 10, 20],
+    )
+
+    assert len(result) == 2
+    assert sorted(result["id"]) == ["t1", "t2"]
+
+
+def test_weibo_loader_drops_null_and_empty_text(tmp_path):
+    pd.DataFrame({
+        "weibo_id": ["w1", "w2", "w3", "w4"],
+        "user_id": ["u1", "u2", "u3", "u4"],
+        "weibo_content": ["AI is great", None, "", "   "],
+        "zan": [0, 0, 0, 0],
+    }).to_parquet(tmp_path / "2024-03-01.parquet", index=False)
+
+    result = weibo_loader(
+        input_dir=str(tmp_path),
+        filename_pattern="{date}.parquet",
+        start_date="2024-03-01",
+        end_date="2024-03-05",
+        target_days=[1, 10, 20],
+    )
+
+    assert list(result["id"]) == ["w1"]
+
+
+def test_twitter_loader_drops_null_and_empty_text(tmp_path):
+    pd.DataFrame({
+        "id": ["t1", "t2", "t3"],
+        "text": ["AI is great", None, ""],
+        "likeCount": [0, 0, 0],
+        "author.id": ["a1", "a2", "a3"],
+        "createdAt": ["Fri Mar 01 12:00:00 +0000 2024"] * 3,
+    }).to_parquet(tmp_path / "tweets_2024-03-01.parquet", index=False)
+
+    result = twitter_loader(
+        input_dir=str(tmp_path),
+        filename_pattern="tweets_{date}.parquet",
+        start_date="2024-03-01",
+        end_date="2024-03-05",
+        target_days=[1, 10, 20],
+    )
+
+    assert list(result["id"]) == ["t1"]
+
+
+def test_parse_target_days_accepts_str_int_and_sequence():
+    from loaders import parse_target_days
+
+    assert parse_target_days("1,10,20") == [1, 10, 20]
+    assert parse_target_days("1, 10 ,20") == [1, 10, 20]
+    assert parse_target_days(10) == [10]
+    assert parse_target_days((1, 10, 20)) == [1, 10, 20]
+    assert parse_target_days([1, 10, 20]) == [1, 10, 20]

@@ -29,4 +29,5 @@ OUTPUT_DIR = "output"
 # Concurrency / retries for OpenRouter calls
 MAX_WORKERS = 8
 MAX_RETRIES = 3
-REQUEST_TIMEOUT = 60
+REQUEST_TIMEOUT = 60  # seconds per OpenRouter request
+BACKOFF_BASE_SECONDS = 2.0  # retry sleep = (attempt + 1) * BACKOFF_BASE_SECONDS
