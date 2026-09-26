@@ -163,3 +163,48 @@ def test_analyze_many_counts_failed_when_opinion_is_none(tmp_path):
     assert summary == {"total": 1, "skipped": 0, "completed": 0, "failed": 1}
     saved = pd.read_csv(results_path)
     assert saved["opinion"].isna().all()
+
+
+class ExceptionRaisingClient:
+    """A client that raises an exception for specific texts."""
+
+    def __init__(self, raise_on_text=None):
+        self.raise_on_text = raise_on_text or set()
+        self.calls = []
+
+    def analyze_one(self, text):
+        self.calls.append(text)
+        if text in self.raise_on_text:
+            raise RuntimeError(f"Injected exception for {text}")
+        return {
+            "opinion": 1,
+            "prompt_tokens": 1,
+            "completion_tokens": 1,
+            "cached_tokens": 0,
+        }
+
+
+def test_analyze_many_guards_against_exception_from_client(tmp_path):
+    """Verify that exceptions from client.analyze_one don't crash analyze_many."""
+    df = pd.DataFrame(
+        {"id": ["a", "b", "c"], "text": ["text a", "text b", "text c"]}
+    )
+    # Client raises exception only for "text b"
+    client = ExceptionRaisingClient(raise_on_text={"text b"})
+    results_path = tmp_path / "results.csv"
+
+    summary = analyze_many(client, df, str(results_path), max_workers=2)
+
+    # All 3 rows should have been attempted (all 3 texts should be in calls)
+    assert set(client.calls) == {"text a", "text b", "text c"}
+    # Summary should show 2 completed, 1 failed (not crashed)
+    assert summary["total"] == 3
+    assert summary["completed"] == 2
+    assert summary["failed"] == 1
+    # All 3 rows should be written to CSV: a with opinion 1, b with NaN, c with opinion 1
+    saved = pd.read_csv(results_path)
+    assert len(saved) == 3
+    assert set(saved["id"]) == {"a", "b", "c"}
+    # Row b should have NaN opinion (from the exception)
+    b_row = saved[saved["id"] == "b"]
+    assert b_row["opinion"].isna().all()

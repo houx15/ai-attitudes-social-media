@@ -114,7 +114,16 @@ def analyze_many(
     write_header = not path.exists() or path.stat().st_size == 0
 
     def process_row(row_id, row_text):
-        result = client.analyze_one(row_text)
+        try:
+            result = client.analyze_one(row_text)
+        except Exception as e:
+            logger.error(f"Exception calling client.analyze_one for row {row_id}: {e}")
+            result = {
+                "opinion": None,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "cached_tokens": 0,
+            }
         opinion_value = "" if result["opinion"] is None else result["opinion"]
         nonlocal write_header
         with write_lock:
