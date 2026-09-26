@@ -97,8 +97,56 @@ def _clean_cli(platform: str):
     )
 
 
+def export(weibo_path: str, twitter_path: str, output_path: str) -> pd.DataFrame:
+    weibo_df = pd.read_parquet(weibo_path).rename(
+        columns={
+            "avg_opinion": "weibo_avg_opinion",
+            "weighted_opinion": "weibo_weighted_opinion",
+            "user_avg_opinion": "weibo_user_avg_opinion",
+        }
+    )
+    twitter_df = pd.read_parquet(twitter_path).rename(
+        columns={
+            "avg_opinion": "twitter_avg_opinion",
+            "weighted_opinion": "twitter_weighted_opinion",
+            "user_avg_opinion": "twitter_user_avg_opinion",
+        }
+    )
+
+    merged = weibo_df.merge(twitter_df, on="date", how="outer")
+    merged = merged[
+        [
+            "date",
+            "weibo_avg_opinion",
+            "twitter_avg_opinion",
+            "weibo_weighted_opinion",
+            "twitter_weighted_opinion",
+            "weibo_user_avg_opinion",
+            "twitter_user_avg_opinion",
+        ]
+    ]
+    merged = merged.sort_values("date").reset_index(drop=True)
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    merged.to_parquet(output_path, index=False)
+    merged.to_csv(output_path.with_suffix(".csv"), index=False)
+    print(f"Saved figure data to {output_path} ({len(merged)} dates)")
+    return merged
+
+
+def _export_cli():
+    import config
+
+    export(
+        weibo_path=f"{config.OUTPUT_DIR}/weibo_daily_opinion.parquet",
+        twitter_path=f"{config.OUTPUT_DIR}/twitter_daily_opinion.parquet",
+        output_path=f"{config.OUTPUT_DIR}/figure_data.parquet",
+    )
+
+
 def main():
-    fire.Fire({"clean": _clean_cli})
+    fire.Fire({"clean": _clean_cli, "export": _export_cli})
 
 
 if __name__ == "__main__":
