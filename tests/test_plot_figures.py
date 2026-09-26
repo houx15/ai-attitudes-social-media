@@ -56,3 +56,28 @@ def test_main_writes_one_pdf_and_csv_per_metric(tmp_path):
         saved = pd.read_csv(csv_path)
         # exactly two lines: weibo vs twitter, no four-line variant
         assert list(saved.columns) == ["date", "weibo", "twitter"]
+
+
+@pytest.mark.parametrize("metric_name", ["avg_opinion", "weighted_opinion", "user_avg_opinion"])
+def test_plot_metric_draws_benefits_and_concerns_annotations(metric_name):
+    # (G) spec: same visual style as legacy plot.py, incl. the "AI benefits" /
+    # "AI concerns" annotations near the top/bottom of the y-range, all metrics.
+    figure_df = pd.DataFrame({
+        "date": pd.date_range("2024-03-01", periods=5).strftime("%Y-%m-%d"),
+        f"weibo_{metric_name}": [0.1, 0.2, 0.3, 0.4, 0.5],
+        f"twitter_{metric_name}": [-0.1, -0.2, -0.3, -0.4, -0.5],
+    })
+    fig, ax = plt.subplots()
+    plot_metric(ax, figure_df, metric_name, "label", use_smoothing=False)
+    texts = {t.get_text(): t for t in ax.texts}
+    y_low, y_high = ax.get_ylim()
+    plt.close(fig)
+
+    assert len(ax.texts) == 2
+    assert set(texts) == {"AI benefits", "AI concerns"}
+    benefits_y = texts["AI benefits"].get_position()[1]
+    concerns_y = texts["AI concerns"].get_position()[1]
+    # benefits near the top, concerns near the bottom, both inside the axes
+    assert concerns_y < 0 < benefits_y
+    assert y_low < concerns_y and benefits_y < y_high
+    assert benefits_y > 0.5 and concerns_y < -0.5

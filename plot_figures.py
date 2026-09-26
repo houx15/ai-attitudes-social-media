@@ -68,6 +68,31 @@ def plot_metric(
     if metric_name == "weighted_opinion":
         ax.axhline(y=0, color="grey", linestyle="--", linewidth=2, zorder=0)
 
+    # "AI benefits" / "AI concerns" annotations near the top/bottom of the
+    # y-range, at the left edge — same positioning as the legacy plot.py.
+    all_values = pd.concat([weibo_values, twitter_values]).dropna()
+    if len(all_values) > 0:
+        x_min = df["date"].min()
+        x_max = df["date"].max()
+        x_min = x_min - (x_max - x_min) * 0.03
+
+        y_max = all_values.max()
+        y_min = all_values.min()
+        y_range = y_max - y_min
+        y_padding = max(0.1 * y_range, 0.1)  # at least 10% padding or 0.1 unit
+        ax.set_ylim(y_min - y_padding, y_max + y_padding)
+
+        y_top = y_max + 0.05 * y_range
+        y_bottom = y_min - 0.05 * y_range
+        ax.text(
+            x_min, y_top, "AI benefits", fontsize=10, color="black",
+            verticalalignment="top", horizontalalignment="left",
+        )
+        ax.text(
+            x_min, y_bottom, "AI concerns", fontsize=10, color="black",
+            verticalalignment="bottom", horizontalalignment="left",
+        )
+
     ax.set_xlabel("Time", fontsize=12, fontweight="bold")
     ax.set_ylabel(ylabel, fontsize=12, fontweight="bold")
     ax.xaxis.set_major_locator(mdates.MonthLocator())
