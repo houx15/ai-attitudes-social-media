@@ -296,3 +296,196 @@ def test_clean_cli_overrides_through_real_fire_parsing(tmp_path, monkeypatch):
     assert captured[-1]["start_date"] == "2024-04-01"
     assert captured[-1]["end_date"] == "2024-04-30"
     assert captured[-1]["target_days"] == [1, 10, 20]
+
+
+def test_clean_cli_passes_each_platforms_date_substitutions_from_config(tmp_path, monkeypatch):
+    import prepare_data
+
+    fake_config = _install_fake_config(monkeypatch, tmp_path)
+    fake_config.DATE_SUBSTITUTIONS = {"weibo": {"2024-03-01": "2024-02-29"}, "twitter": {}}
+    captured = []
+    monkeypatch.setattr(prepare_data, "clean", lambda **kw: captured.append(kw))
+
+    prepare_data._clean_cli("weibo")
+    prepare_data._clean_cli("twitter")
+
+    assert captured[0]["date_substitutions"] == {"2024-03-01": "2024-02-29"}
+    assert captured[1]["date_substitutions"] == {}
+
+
+def test_clean_keeps_substituted_day_under_its_actual_date(tmp_path):
+    pd.DataFrame({
+        "weibo_id": ["w1", "w2"], "user_id": ["u1", "u2"],
+        "weibo_content": ["a", "b"], "zan": [0, 0],
+    }).to_parquet(tmp_path / "2024-02-29.parquet", index=False)
+    results_path = tmp_path / "weibo_opinion_results.csv"
+    pd.DataFrame({
+        "id": ["w1", "w2"], "opinion": [2, 0],
+        "prompt_tokens": [1, 1], "completion_tokens": [1, 1], "cached_tokens": [0, 0],
+    }).to_csv(results_path, index=False)
+
+    result = clean(
+        platform="weibo",
+        input_dir=str(tmp_path),
+        filename_pattern="{date}.parquet",
+        start_date="2024-03-01",
+        end_date="2024-03-05",
+        target_days=[1, 10, 20],
+        opinion_results_path=str(results_path),
+        output_path=str(tmp_path / "weibo_daily_opinion.parquet"),
+        date_substitutions={"2024-03-01": "2024-02-29"},
+    )
+
+    assert result["date"].tolist() == ["2024-02-29"]
+    assert result["avg_opinion"].tolist() == pytest.approx([1.0])
+
+
+def test_clean_leaves_posts_with_missing_user_id_out_of_the_user_level_mean(tmp_path):
+    # Legacy behaviour: groupby on the raw user_id drops missing users, so their
+    # posts count toward avg/weighted opinion but not toward user_avg_opinion.
+    pd.DataFrame({
+        "weibo_id": ["w1", "w2"], "user_id": [1001, None],
+        "weibo_content": ["a", "b"], "zan": [0, 0],
+    }).to_parquet(tmp_path / "2024-03-01.parquet", index=False)
+    results_path = tmp_path / "weibo_opinion_results.csv"
+    pd.DataFrame({
+        "id": ["w1", "w2"], "opinion": [2, -2],
+        "prompt_tokens": [1, 1], "completion_tokens": [1, 1], "cached_tokens": [0, 0],
+    }).to_csv(results_path, index=False)
+
+    result = clean(
+        platform="weibo",
+        input_dir=str(tmp_path),
+        filename_pattern="{date}.parquet",
+        start_date="2024-03-01",
+        end_date="2024-03-05",
+        target_days=[1, 10, 20],
+        opinion_results_path=str(results_path),
+        output_path=str(tmp_path / "weibo_daily_opinion.parquet"),
+    )
+
+    row = result.iloc[0]
+    assert row["avg_opinion"] == pytest.approx(0.0)
+    assert row["weighted_opinion"] == pytest.approx(0.0)
+    assert row["user_avg_opinion"] == pytest.approx(2.0)
+
+
+def _write_twitter_day(tmp_path):
+    pd.DataFrame({
+        "id": ["t1", "t2", "t3"],
+        "text": ["a", "b", "c"],
+        "likeCount": [0, 0, 0],
+        "author.id": ["us1", "uk1", "us2"],
+        "createdAt": ["Fri Mar 01 12:00:00 +0000 2024"] * 3,
+    }).to_parquet(tmp_path / "tweets_2024-03-01.parquet", index=False)
+    results_path = tmp_path / "twitter_opinion_results.csv"
+    pd.DataFrame({
+        "id": ["t1", "t2", "t3"], "opinion": [2, -2, 0],
+        "prompt_tokens": [1] * 3, "completion_tokens": [1] * 3, "cached_tokens": [0] * 3,
+    }).to_csv(results_path, index=False)
+    return results_path
+
+
+def test_clean_keeps_only_listed_users_when_given_a_user_id_filter(tmp_path):
+    results_path = _write_twitter_day(tmp_path)
+    user_filter = tmp_path / "us_userids.json"
+    user_filter.write_text('["us1", "us2"]')
+
+    result = clean(
+        platform="twitter",
+        input_dir=str(tmp_path),
+        filename_pattern="tweets_{date}.parquet",
+        start_date="2024-03-01",
+        end_date="2024-03-05",
+        target_days=[1, 10, 20],
+        opinion_results_path=str(results_path),
+        output_path=str(tmp_path / "twitter_daily_opinion.parquet"),
+        user_id_filter_path=str(user_filter),
+    )
+
+    # uk1's -2 is excluded; mean of us1 (2) and us2 (0)
+    assert result.iloc[0]["avg_opinion"] == pytest.approx(1.0)
+
+
+def test_clean_without_a_user_id_filter_keeps_everyone(tmp_path):
+    results_path = _write_twitter_day(tmp_path)
+
+    result = clean(
+        platform="twitter",
+        input_dir=str(tmp_path),
+        filename_pattern="tweets_{date}.parquet",
+        start_date="2024-03-01",
+        end_date="2024-03-05",
+        target_days=[1, 10, 20],
+        opinion_results_path=str(results_path),
+        output_path=str(tmp_path / "twitter_daily_opinion.parquet"),
+    )
+
+    assert result.iloc[0]["avg_opinion"] == pytest.approx(0.0)
+
+
+def test_clean_cli_location_us_uses_configured_us_userids(tmp_path, monkeypatch):
+    import fire
+
+    import prepare_data
+
+    fake_config = _install_fake_config(monkeypatch, tmp_path)
+    fake_config.TWITTER_US_USERIDS_PATH = str(tmp_path / "us_userids.json")
+    captured = []
+    monkeypatch.setattr(prepare_data, "clean", lambda **kw: captured.append(kw))
+
+    fire.Fire({"clean": prepare_data._clean_cli}, command=["clean", "--platform", "twitter", "--location", "us"])
+    fire.Fire({"clean": prepare_data._clean_cli}, command=["clean", "--platform", "twitter"])
+
+    assert captured[0]["user_id_filter_path"] == str(tmp_path / "us_userids.json")
+    assert captured[1]["user_id_filter_path"] is None
+
+
+@pytest.mark.parametrize("platform, location", [("weibo", "us"), ("twitter", "uk")])
+def test_clean_cli_rejects_unsupported_location(tmp_path, monkeypatch, platform, location):
+    import prepare_data
+
+    fake_config = _install_fake_config(monkeypatch, tmp_path)
+    fake_config.TWITTER_US_USERIDS_PATH = str(tmp_path / "us_userids.json")
+    monkeypatch.setattr(prepare_data, "clean", lambda **kw: None)
+
+    with pytest.raises(ValueError):
+        prepare_data._clean_cli(platform, location=location)
+
+
+def test_missing_like_counts_are_weighted_per_platform_like_legacy(tmp_path):
+    # Legacy Weibo: pd.to_numeric(zan).fillna(0) + 1, so a missing like count
+    # weighs 1. Legacy Twitter: likeCount + 1 with no fillna, so the post drops
+    # out of the weighted mean only.
+    weibo_dir, twitter_dir = tmp_path / "weibo", tmp_path / "twitter"
+    weibo_dir.mkdir()
+    twitter_dir.mkdir()
+    pd.DataFrame({
+        "weibo_id": ["w1", "w2"], "user_id": [1, 2], "weibo_content": ["a", "b"],
+        "zan": [None, 0],
+    }).to_parquet(weibo_dir / "2024-03-01.parquet", index=False)
+    pd.DataFrame({
+        "id": ["t1", "t2"], "text": ["a", "b"], "likeCount": [None, 0],
+        "author.id": ["a1", "a2"], "createdAt": ["Fri Mar 01 12:00:00 +0000 2024"] * 2,
+    }).to_parquet(twitter_dir / "tweets_2024-03-01.parquet", index=False)
+    for platform, ids in (("weibo", ["w1", "w2"]), ("twitter", ["t1", "t2"])):
+        pd.DataFrame({
+            "id": ids, "opinion": [2, 0],
+            "prompt_tokens": [1, 1], "completion_tokens": [1, 1], "cached_tokens": [0, 0],
+        }).to_csv(tmp_path / f"{platform}_results.csv", index=False)
+
+    def run(platform, input_dir, pattern):
+        return clean(
+            platform=platform, input_dir=str(input_dir), filename_pattern=pattern,
+            start_date="2024-03-01", end_date="2024-03-05", target_days=[1, 10, 20],
+            opinion_results_path=str(tmp_path / f"{platform}_results.csv"),
+            output_path=str(tmp_path / f"{platform}_daily.parquet"),
+        ).iloc[0]
+
+    weibo = run("weibo", weibo_dir, "{date}.parquet")
+    twitter = run("twitter", twitter_dir, "tweets_{date}.parquet")
+
+    assert weibo["avg_opinion"] == pytest.approx(1.0)
+    assert weibo["weighted_opinion"] == pytest.approx(1.0)
+    assert twitter["avg_opinion"] == pytest.approx(1.0)
+    assert twitter["weighted_opinion"] == pytest.approx(0.0)

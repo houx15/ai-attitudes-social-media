@@ -99,5 +99,5 @@ def test_full_pipeline_weibo_and_twitter_to_plots(tmp_path):
     plot_main(figure_data_path=str(figure_data_path), output_dir=str(figures_dir))
 
     for metric_name in ["avg_opinion", "weighted_opinion", "user_avg_opinion"]:
-        assert (figures_dir / f"{metric_name}_comparison.pdf").exists()
-        assert (figures_dir / f"{metric_name}_comparison.csv").exists()
+        assert len(list(figures_dir.glob(f"{metric_name}_comparison_smoothed3d_*.pdf"))) == 1
+        assert len(list(figures_dir.glob(f"{metric_name}_comparison_smoothed3d_*.csv"))) == 1

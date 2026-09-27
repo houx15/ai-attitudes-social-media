@@ -12,6 +12,12 @@ OPENROUTER_MODEL = "deepseek/deepseek-v4.1-flash"  # verify exact slug on openro
 START_DATE = "2024-03-01"
 END_DATE = "2025-03-20"
 TARGET_DAYS = [1, 10, 20]
+# Sampled days whose data is missing, replaced by a nearby day that was crawled
+# instead. Posts keep their actual date (e.g. Weibo's point sits on 2024-02-29).
+DATE_SUBSTITUTIONS = {
+    "weibo": {"2024-03-01": "2024-02-29", "2024-10-01": "2024-10-02"},
+    "twitter": {},
+}
 
 # Weibo input: already keyword-filtered per-day files produced by
 # youth-analysis/ai_content_extractor.py. This pipeline only reads them.
@@ -22,6 +28,9 @@ WEIBO_FILENAME_PATTERN = "{date}.parquet"
 # twitterapi-io's crawler + convert_to_parquet.py. This pipeline only reads them.
 TWITTER_INPUT_DIR = "YOUR_PATH_HERE"  # e.g. /path/to/twitterapi-io/parquet_data
 TWITTER_FILENAME_PATTERN = "tweets_{date}.parquet"
+# us_userids.json from twitterapi-io/user_location_filter.py; used only by
+# `prepare_data.py clean --platform twitter --location us`.
+TWITTER_US_USERIDS_PATH = "YOUR_PATH_HERE"  # e.g. /path/to/user_location_filter/us_userids.json
 
 # Output roots
 OUTPUT_DIR = "output"

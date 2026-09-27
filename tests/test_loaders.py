@@ -154,7 +154,9 @@ def test_twitter_loader_drops_duplicate_ids(tmp_path):
     assert sorted(result["id"]) == ["t1", "t2"]
 
 
-def test_weibo_loader_drops_null_and_empty_text(tmp_path):
+def test_weibo_loader_keeps_null_and_empty_text_like_legacy(tmp_path):
+    # Legacy ai_sentiment_analyzer.py sent every Weibo post, using
+    # str(weibo_content or "") as the text.
     pd.DataFrame({
         "weibo_id": ["w1", "w2", "w3", "w4"],
         "user_id": ["u1", "u2", "u3", "u4"],
@@ -170,16 +172,19 @@ def test_weibo_loader_drops_null_and_empty_text(tmp_path):
         target_days=[1, 10, 20],
     )
 
-    assert list(result["id"]) == ["w1"]
+    assert list(result["id"]) == ["w1", "w2", "w3", "w4"]
+    assert list(result["text"]) == ["AI is great", "", "", "   "]
 
 
-def test_twitter_loader_drops_null_and_empty_text(tmp_path):
+def test_twitter_loader_drops_null_and_empty_text_like_legacy(tmp_path):
+    # Legacy batch_sentiment_analysis.py skipped a tweet only when `text or ""`
+    # was falsy, so whitespace-only text was still sent.
     pd.DataFrame({
-        "id": ["t1", "t2", "t3"],
-        "text": ["AI is great", None, ""],
-        "likeCount": [0, 0, 0],
-        "author.id": ["a1", "a2", "a3"],
-        "createdAt": ["Fri Mar 01 12:00:00 +0000 2024"] * 3,
+        "id": ["t1", "t2", "t3", "t4"],
+        "text": ["AI is great", None, "", "   "],
+        "likeCount": [0, 0, 0, 0],
+        "author.id": ["a1", "a2", "a3", "a4"],
+        "createdAt": ["Fri Mar 01 12:00:00 +0000 2024"] * 4,
     }).to_parquet(tmp_path / "tweets_2024-03-01.parquet", index=False)
 
     result = twitter_loader(
@@ -190,7 +195,7 @@ def test_twitter_loader_drops_null_and_empty_text(tmp_path):
         target_days=[1, 10, 20],
     )
 
-    assert list(result["id"]) == ["t1"]
+    assert list(result["id"]) == ["t1", "t4"]
 
 
 def test_parse_target_days_accepts_str_int_and_sequence():
@@ -201,3 +206,73 @@ def test_parse_target_days_accepts_str_int_and_sequence():
     assert parse_target_days(10) == [10]
     assert parse_target_days((1, 10, 20)) == [1, 10, 20]
     assert parse_target_days([1, 10, 20]) == [1, 10, 20]
+
+
+def test_iter_target_dates_applies_substitutions():
+    dates = iter_target_dates(
+        "2024-03-01", "2024-03-31", [1, 10, 20], substitutions={"2024-03-01": "2024-02-29"}
+    )
+    # The substitute stands in for its nominal date even though it falls before
+    # start_date.
+    assert dates == ["2024-02-29", "2024-03-10", "2024-03-20"]
+
+
+def test_iter_target_dates_ignores_substitutions_outside_range():
+    dates = iter_target_dates(
+        "2024-03-05", "2024-03-31", [1, 10, 20], substitutions={"2024-03-01": "2024-02-29"}
+    )
+    assert dates == ["2024-03-10", "2024-03-20"]
+
+
+def test_weibo_loader_reads_substituted_day_under_its_actual_date(tmp_path):
+    pd.DataFrame({
+        "weibo_id": ["w1"], "user_id": ["u1"], "weibo_content": ["AI"], "zan": [0],
+    }).to_parquet(tmp_path / "2024-02-29.parquet", index=False)
+
+    result = weibo_loader(
+        input_dir=str(tmp_path),
+        filename_pattern="{date}.parquet",
+        start_date="2024-03-01",
+        end_date="2024-03-05",
+        target_days=[1, 10, 20],
+        substitutions={"2024-03-01": "2024-02-29"},
+    )
+
+    assert list(result["id"]) == ["w1"]
+    assert list(result["date"]) == ["2024-02-29"]
+
+
+def test_twitter_loader_reads_substituted_day(tmp_path):
+    pd.DataFrame({
+        "id": ["t1"], "text": ["AI"], "likeCount": [0], "author.id": ["a1"],
+        "createdAt": ["Wed Oct 02 12:00:00 +0000 2024"],
+    }).to_parquet(tmp_path / "tweets_2024-10-02.parquet", index=False)
+
+    result = twitter_loader(
+        input_dir=str(tmp_path),
+        filename_pattern="tweets_{date}.parquet",
+        start_date="2024-10-01",
+        end_date="2024-10-05",
+        target_days=[1, 10, 20],
+        substitutions={"2024-10-01": "2024-10-02"},
+    )
+
+    assert list(result["date"]) == ["2024-10-02"]
+
+
+def test_loader_reports_target_dates_with_no_input_file(tmp_path, capsys):
+    pd.DataFrame({
+        "weibo_id": ["w1"], "user_id": ["u1"], "weibo_content": ["AI"], "zan": [0],
+    }).to_parquet(tmp_path / "2024-03-01.parquet", index=False)
+
+    weibo_loader(
+        input_dir=str(tmp_path),
+        filename_pattern="{date}.parquet",
+        start_date="2024-03-01",
+        end_date="2024-03-20",
+        target_days=[1, 10, 20],
+    )
+
+    out = capsys.readouterr().out
+    assert "2024-03-10" in out and "2024-03-20" in out
+    assert "2024-03-01" not in out

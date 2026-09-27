@@ -3,12 +3,14 @@
 Usage:
     python prepare_data.py clean --platform weibo
     python prepare_data.py clean --platform twitter
+    python prepare_data.py clean --platform twitter --location us   # keep only US users' tweets
     python prepare_data.py clean --platform weibo --start_date 2024-03-01 --end_date 2024-03-31 --target_days 1,10,20
     python prepare_data.py export
 """
 
+import json
 from pathlib import Path
-from typing import List, Optional, Sequence, Union
+from typing import Dict, List, Optional, Sequence, Union
 
 import fire
 import pandas as pd
@@ -27,12 +29,14 @@ def clean(
     target_days: List[int],
     opinion_results_path: str,
     output_path: str,
+    date_substitutions: Optional[Dict[str, str]] = None,
+    user_id_filter_path: Optional[str] = None,
 ) -> pd.DataFrame:
     if platform not in LOADERS:
         raise ValueError(f"Unknown platform: {platform!r}, expected one of {list(LOADERS)}")
 
     loader = LOADERS[platform]
-    meta_df = loader(input_dir, filename_pattern, start_date, end_date, target_days)
+    meta_df = loader(input_dir, filename_pattern, start_date, end_date, target_days, date_substitutions)
 
     opinions_df = pd.read_csv(opinion_results_path, dtype={"id": str})
     # A retried id is appended again to the results CSV; the latest write wins
@@ -40,6 +44,15 @@ def clean(
     opinions_df = opinions_df.drop_duplicates(subset=["id"], keep="last")
     merged = meta_df.merge(opinions_df, on="id", how="inner")
     n_matched = len(merged)
+
+    if user_id_filter_path is not None:
+        with open(user_id_filter_path, "r") as f:
+            kept_user_ids = json.load(f)
+        merged = merged[merged["user_id"].isin(kept_user_ids)]
+        print(
+            f"User filter {user_id_filter_path}: kept {len(merged)} of {n_matched} posts "
+            f"from {merged['user_id'].nunique()} users"
+        )
 
     merged["opinion"] = pd.to_numeric(merged["opinion"], errors="coerce")
     merged = merged.dropna(subset=["opinion"])
@@ -49,7 +62,13 @@ def clean(
         f"{n_matched} matched an opinion result, "
         f"{len(merged)} with a valid numeric opinion"
     )
-    merged["weight"] = pd.to_numeric(merged["weight_raw"], errors="coerce").fillna(0) + 1
+    weight_raw = pd.to_numeric(merged["weight_raw"], errors="coerce")
+    # Legacy behaviour differs per platform: Weibo filled a missing like count
+    # with 0; Twitter left it missing, which drops the post from the weighted
+    # mean only (pandas sums skip NaN in both numerator and denominator).
+    if platform == "weibo":
+        weight_raw = weight_raw.fillna(0)
+    merged["weight"] = weight_raw + 1
 
     daily_avg = merged.groupby("date")["opinion"].mean().reset_index()
     daily_avg.columns = ["date", "avg_opinion"]
@@ -89,8 +108,18 @@ def _clean_cli(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     target_days: Optional[Union[str, int, Sequence[int]]] = None,
+    location: Optional[str] = None,
 ):
     import config
+
+    # Same as the legacy `batch_sentiment_analysis.py calculate --location us`:
+    # an opt-in filter to US users' tweets, applied at aggregation time.
+    if location is None:
+        user_id_filter_path = None
+    elif location == "us" and platform == "twitter":
+        user_id_filter_path = config.TWITTER_US_USERIDS_PATH
+    else:
+        raise ValueError(f"--location {location!r} is not supported for {platform}; only twitter + us")
 
     input_dir = config.WEIBO_INPUT_DIR if platform == "weibo" else config.TWITTER_INPUT_DIR
     filename_pattern = (
@@ -112,6 +141,8 @@ def _clean_cli(
         ),
         opinion_results_path=opinion_results_path,
         output_path=output_path,
+        date_substitutions=getattr(config, "DATE_SUBSTITUTIONS", {}).get(platform, {}),
+        user_id_filter_path=user_id_filter_path,
     )
 
 

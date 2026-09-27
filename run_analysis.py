@@ -7,7 +7,7 @@ Usage:
     python run_analysis.py weibo --target_days 1,10,20
 """
 
-from typing import List, Optional, Sequence, Union
+from typing import Dict, List, Optional, Sequence, Union
 
 import fire
 
@@ -33,12 +33,13 @@ def analyze(
     client=None,
     timeout: int = 60,
     backoff_base_seconds: float = 0.01,
+    date_substitutions: Optional[Dict[str, str]] = None,
 ) -> dict:
     if platform not in LOADERS:
         raise ValueError(f"Unknown platform: {platform!r}, expected one of {list(LOADERS)}")
 
     loader = LOADERS[platform]
-    df = loader(input_dir, filename_pattern, start_date, end_date, target_days)
+    df = loader(input_dir, filename_pattern, start_date, end_date, target_days, date_substitutions)
 
     if len(df) == 0:
         print(f"No input rows found for platform={platform} in range {start_date}..{end_date}")
@@ -92,6 +93,7 @@ def main(
         max_retries=config.MAX_RETRIES,
         timeout=config.REQUEST_TIMEOUT,
         backoff_base_seconds=getattr(config, "BACKOFF_BASE_SECONDS", 2.0),
+        date_substitutions=getattr(config, "DATE_SUBSTITUTIONS", {}).get(platform, {}),
     )
 
 

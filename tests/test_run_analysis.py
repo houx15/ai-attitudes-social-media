@@ -214,3 +214,49 @@ def test_main_passes_request_timeout_and_backoff_from_config(captured_analyze):
     main("twitter")
     assert captured_analyze[-1]["timeout"] == 45
     assert captured_analyze[-1]["backoff_base_seconds"] == 2.5
+
+
+def test_main_passes_each_platforms_date_substitutions_from_config(captured_analyze):
+    from run_analysis import main
+
+    sys.modules["config"].DATE_SUBSTITUTIONS = {
+        "weibo": {"2024-03-01": "2024-02-29"},
+        "twitter": {},
+    }
+    main("weibo")
+    main("twitter")
+
+    assert captured_analyze[0]["date_substitutions"] == {"2024-03-01": "2024-02-29"}
+    assert captured_analyze[1]["date_substitutions"] == {}
+
+
+def test_main_works_with_a_config_that_has_no_date_substitutions(captured_analyze):
+    from run_analysis import main
+
+    main("weibo")
+
+    assert captured_analyze[0]["date_substitutions"] == {}
+
+
+def test_analyze_reads_substituted_day(tmp_path):
+    pd.DataFrame({
+        "weibo_id": ["w1"], "user_id": ["u1"], "weibo_content": ["AI is great"], "zan": [0],
+    }).to_parquet(tmp_path / "2024-02-29.parquet", index=False)
+    client = FakeClient()
+
+    analyze(
+        platform="weibo",
+        input_dir=str(tmp_path),
+        filename_pattern="{date}.parquet",
+        output_path=str(tmp_path / "out.csv"),
+        api_key="k",
+        base_url="https://openrouter.ai/api/v1",
+        model="m",
+        start_date="2024-03-01",
+        end_date="2024-03-05",
+        target_days=[1, 10, 20],
+        client=client,
+        date_substitutions={"2024-03-01": "2024-02-29"},
+    )
+
+    assert client.calls == ["AI is great"]
