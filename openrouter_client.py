@@ -4,6 +4,7 @@
 import csv
 import json
 import logging
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -11,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
 import pandas as pd
+from tqdm import tqdm
 
 from prompts import SYSTEM_PROMPT, build_user_message
 
@@ -131,7 +133,7 @@ def load_processed_ids(results_path: str) -> set:
 
 
 def analyze_many(
-    client, df: pd.DataFrame, results_path: str, max_workers: int = 8
+    client, df: pd.DataFrame, results_path: str, max_workers: int = 8, desc: str = "Analyzing"
 ) -> Dict:
     path = Path(results_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -147,6 +149,11 @@ def analyze_many(
         "completed": 0,
         "failed": 0,
     }
+    print(
+        f"{desc}: {summary['total']} posts: {summary['skipped']} already done, "
+        f"{len(todo)} to analyze",
+        flush=True,
+    )
     if len(todo) == 0:
         return summary
 
@@ -188,11 +195,20 @@ def analyze_many(
             executor.submit(process_row, row["id"], row["text"])
             for _, row in todo.iterrows()
         ]
-        for future in as_completed(futures):
-            result = future.result()
-            if result["opinion"] is None:
-                summary["failed"] += 1
-            else:
-                summary["completed"] += 1
+        # Refresh every 30s when output goes to a log file, so it isn't flooded.
+        with tqdm(
+            total=len(futures),
+            desc=desc,
+            unit="post",
+            mininterval=0.5 if sys.stderr.isatty() else 30,
+        ) as bar:
+            for future in as_completed(futures):
+                result = future.result()
+                if result["opinion"] is None:
+                    summary["failed"] += 1
+                else:
+                    summary["completed"] += 1
+                bar.update(1)
+                bar.set_postfix(completed=summary["completed"], failed=summary["failed"], refresh=False)
 
     return summary

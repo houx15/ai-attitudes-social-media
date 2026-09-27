@@ -409,3 +409,15 @@ def test_analyze_one_turns_reasoning_off():
     client.analyze_one("some text")
 
     assert captured["extra_body"] == {"reasoning": {"effort": "none"}}
+
+
+def test_analyze_many_shows_progress_and_resume_counts(tmp_path, capsys):
+    results_path = tmp_path / "results.csv"
+    results_path.write_text("id,opinion,prompt_tokens,completion_tokens,cached_tokens\na,1,1,1,0\n")
+    df = pd.DataFrame({"id": ["a", "b", "c"], "text": ["ta", "tb", "tc"]})
+
+    analyze_many(CountingFakeClient(), df, str(results_path), max_workers=2, desc="weibo")
+
+    captured = capsys.readouterr()
+    assert "3 posts: 1 already done, 2 to analyze" in captured.out
+    assert "weibo" in captured.err and "2/2" in captured.err

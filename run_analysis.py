@@ -55,7 +55,7 @@ def analyze(
             backoff_base_seconds=backoff_base_seconds,
         )
 
-    summary = analyze_many(client, df, output_path, max_workers=workers)
+    summary = analyze_many(client, df, output_path, max_workers=workers, desc=platform)
     print(f"Stage 1 analysis summary for {platform}: {summary}")
     return summary
 
