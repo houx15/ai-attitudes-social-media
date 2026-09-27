@@ -36,7 +36,7 @@ TWITTER_US_USERIDS_PATH = "YOUR_PATH_HERE"  # e.g. /path/to/user_location_filter
 OUTPUT_DIR = "output"
 
 # Concurrency / retries for OpenRouter calls
-MAX_WORKERS = 8
+MAX_WORKERS = 32  # requests in flight per process; see README / probe_throughput.py
 MAX_RETRIES = 3
-REQUEST_TIMEOUT = 60  # seconds per OpenRouter request
+REQUEST_TIMEOUT = 30  # seconds per request; p90 latency is ~2.5s, so this only cuts stragglers
 BACKOFF_BASE_SECONDS = 2.0  # retry sleep = (attempt + 1) * BACKOFF_BASE_SECONDS

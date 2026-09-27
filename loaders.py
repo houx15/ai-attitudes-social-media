@@ -80,6 +80,29 @@ def count_input_rows(files: List[Tuple[str, str]]) -> int:
     return sum(pq.ParquetFile(path).metadata.num_rows for _, path in files)
 
 
+def assign_task_files(
+    files: List[Tuple[str, str]], task_id: int, num_tasks: int
+) -> List[Tuple[str, str]]:
+    """The day files task `task_id` (1-based) of `num_tasks` should process.
+
+    Days are dealt out so every task gets a similar number of rows (largest day
+    first, each to the currently lightest task), using only parquet metadata.
+    Every task computes the same split, so the tasks never overlap.
+    """
+    if num_tasks < 1 or not 1 <= task_id <= num_tasks:
+        raise ValueError(f"task_id must be in 1..num_tasks, got {task_id} of {num_tasks}")
+    if num_tasks == 1:
+        return files
+    sizes = [pq.ParquetFile(path).metadata.num_rows for _, path in files]
+    loads = [0] * num_tasks
+    owner = {}
+    for index in sorted(range(len(files)), key=lambda i: (-sizes[i], files[i][0])):
+        lightest = min(range(num_tasks), key=lambda t: (loads[t], t))
+        loads[lightest] += sizes[index]
+        owner[index] = lightest
+    return [f for i, f in enumerate(files) if owner[i] == task_id - 1]
+
+
 def _read_weibo_day(date_str: str, file_path: str, with_text: bool) -> pd.DataFrame:
     columns = ["weibo_id", "user_id", "zan"] + (["weibo_content"] if with_text else [])
     df = pd.read_parquet(file_path, columns=columns)

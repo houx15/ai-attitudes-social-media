@@ -1,3 +1,4 @@
+import pytest
 import pandas as pd
 
 from loaders import iter_target_dates, weibo_loader, twitter_loader, STANDARD_COLUMNS
@@ -321,3 +322,30 @@ def test_count_input_rows_reads_only_file_metadata(tmp_path):
     files = day_files("weibo", str(tmp_path), "{date}.parquet", "2024-03-01", "2024-03-10", [1, 10, 20])
 
     assert count_input_rows(files) == 4
+
+
+def test_assign_task_files_balances_rows_and_covers_every_file_once(tmp_path):
+    from loaders import assign_task_files, day_files
+
+    sizes = {"2024-03-01": 50, "2024-03-10": 10, "2024-03-20": 30, "2024-04-01": 20,
+             "2024-04-10": 40, "2024-04-20": 10}
+    for date, n in sizes.items():
+        _write_weibo_day(tmp_path, date, [f"{date}_{i}" for i in range(n)])
+    files = day_files("weibo", str(tmp_path), "{date}.parquet", "2024-03-01", "2024-04-30", [1, 10, 20])
+
+    tasks = [assign_task_files(files, task_id, 3) for task_id in (1, 2, 3)]
+
+    assigned = [date for task in tasks for date, _ in task]
+    assert sorted(assigned) == sorted(sizes)  # every day exactly once
+    loads = [sum(sizes[date] for date, _ in task) for task in tasks]
+    assert max(loads) - min(loads) <= 10  # 160 rows split 50/60/50-ish, not by count of days
+    assert all([d for d, _ in task] == sorted(d for d, _ in task) for task in tasks)
+    assert assign_task_files(files, 1, 1) == files
+
+
+@pytest.mark.parametrize("task_id, num_tasks", [(0, 4), (5, 4), (1, 0)])
+def test_assign_task_files_rejects_bad_task_ids(task_id, num_tasks):
+    from loaders import assign_task_files
+
+    with pytest.raises(ValueError):
+        assign_task_files([], task_id, num_tasks)

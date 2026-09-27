@@ -15,13 +15,20 @@ import fire
 import pandas as pd
 
 from loaders import day_files, iter_platform_days, parse_target_days
+from openrouter_client import normalize_opinion
 
 
-def _load_opinions(opinion_results_path: str) -> pd.DataFrame:
-    opinions = pd.read_csv(opinion_results_path, usecols=["id", "opinion"], dtype={"id": str})
-    # A retried id is appended again to the results CSV; the latest write wins
-    # so each post counts exactly once.
-    return opinions.drop_duplicates(subset=["id"], keep="last")
+def _load_opinions(opinion_results_path: Union[str, List[str]]) -> pd.DataFrame:
+    paths = [opinion_results_path] if isinstance(opinion_results_path, str) else opinion_results_path
+    opinions = pd.concat(
+        [pd.read_csv(p, usecols=["id", "opinion"], dtype={"id": str}) for p in paths],
+        ignore_index=True,
+    )
+    # A retried post appears again (later in its file, or in another task's
+    # file). Each post counts once: its latest valid label, else its latest attempt.
+    valid = opinions["opinion"].map(normalize_opinion).notna()
+    opinions = opinions.assign(_valid=valid).sort_values("_valid", kind="stable")
+    return opinions.drop_duplicates(subset=["id"], keep="last").drop(columns="_valid")
 
 
 def clean(
@@ -31,7 +38,7 @@ def clean(
     start_date: str,
     end_date: str,
     target_days: List[int],
-    opinion_results_path: str,
+    opinion_results_path: Union[str, List[str]],
     output_path: str,
     date_substitutions: Optional[Dict[str, str]] = None,
     user_id_filter_path: Optional[str] = None,
@@ -141,7 +148,12 @@ def _clean_cli(
         if platform == "weibo"
         else config.TWITTER_FILENAME_PATTERN
     )
-    opinion_results_path = f"{config.OUTPUT_DIR}/analysis_results/{platform}_opinion_results.csv"
+    # Every run and task of this platform (see run_analysis.py --task_id).
+    opinion_results_path = sorted(
+        str(p) for p in Path(config.OUTPUT_DIR, "analysis_results").glob(f"{platform}_opinion_results*.csv")
+    )
+    if not opinion_results_path:
+        raise FileNotFoundError(f"No {platform}_opinion_results*.csv in {config.OUTPUT_DIR}/analysis_results")
     output_path = f"{config.OUTPUT_DIR}/{platform}_daily_opinion.parquet"
 
     clean(

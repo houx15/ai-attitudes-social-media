@@ -172,6 +172,7 @@ def analyze_stream(
     max_workers: int = 8,
     desc: str = "Analyzing",
     total_rows: Optional[int] = None,
+    done_paths: Optional[Iterable[str]] = None,
 ) -> Dict:
     """Label posts frame by frame (one day at a time), appending to the results CSV.
 
@@ -182,8 +183,17 @@ def analyze_stream(
     path = Path(results_path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    processed_ids = load_processed_ids(results_path)
-    print(f"{desc}: {len(processed_ids):,} posts already labelled in {path.name}", flush=True)
+    # Posts with a valid label in any of these files are skipped (default: this
+    # run's own results file).
+    done_paths = list(done_paths) if done_paths is not None else [results_path]
+    processed_ids = set()
+    for done_path in done_paths:
+        processed_ids |= load_processed_ids(done_path)
+    print(
+        f"{desc}: {len(processed_ids):,} posts already labelled in "
+        + ", ".join(Path(d).name for d in done_paths),
+        flush=True,
+    )
 
     summary = {"total": 0, "skipped": 0, "completed": 0, "failed": 0}
     run_tokens = {column: 0 for column in TOKEN_COLUMNS}

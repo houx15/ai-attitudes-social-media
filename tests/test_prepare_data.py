@@ -1,3 +1,4 @@
+from pathlib import Path
 import pandas as pd
 import pytest
 
@@ -252,6 +253,12 @@ def _install_fake_config(monkeypatch, tmp_path):
     fake_config.MAX_RETRIES = 3
     fake_config.REQUEST_TIMEOUT = 45
     fake_config.TWITTER_US_USERIDS_PATH = str(tmp_path / "us_userids.json")
+    results_dir = tmp_path / "output" / "analysis_results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    for platform in ("weibo", "twitter"):
+        (results_dir / f"{platform}_opinion_results.csv").write_text(
+            "id,opinion,prompt_tokens,completion_tokens,cached_tokens\n"
+        )
     monkeypatch.setitem(sys.modules, "config", fake_config)
     return fake_config
 
@@ -519,3 +526,45 @@ def test_clean_never_reads_the_text_column(tmp_path):
     )
 
     assert result["avg_opinion"].tolist() == pytest.approx([1.0])
+
+
+def test_clean_reads_every_results_file_and_prefers_a_valid_label(tmp_path):
+    pd.DataFrame({
+        "weibo_id": ["w1", "w2"], "user_id": [1, 2], "weibo_content": ["a", "b"], "zan": [0, 0],
+    }).to_parquet(tmp_path / "2024-03-01.parquet", index=False)
+    header = "id,opinion,prompt_tokens,completion_tokens,cached_tokens\n"
+    old = tmp_path / "weibo_opinion_results.csv"
+    old.write_text(header + "w1,2,1,1,0\nw2,,0,0,0\n")  # w2 failed in the first run
+    task = tmp_path / "weibo_opinion_results_task1of2.csv"
+    task.write_text(header + "w2,0,1,1,0\n")  # retried by a task
+
+    result = clean(
+        platform="weibo",
+        input_dir=str(tmp_path),
+        filename_pattern="{date}.parquet",
+        start_date="2024-03-01",
+        end_date="2024-03-05",
+        target_days=[1, 10, 20],
+        opinion_results_path=[str(old), str(task)],
+        output_path=str(tmp_path / "weibo_daily_opinion.parquet"),
+    )
+
+    assert result["avg_opinion"].tolist() == pytest.approx([1.0])  # mean(2, 0)
+
+
+def test_clean_cli_reads_all_of_a_platforms_results_files(tmp_path, monkeypatch):
+    import prepare_data
+
+    _install_fake_config(monkeypatch, tmp_path)
+    results_dir = tmp_path / "output" / "analysis_results"
+    for name in ("weibo_opinion_results.csv", "weibo_opinion_results_task2of4.csv",
+                 "twitter_opinion_results_task1of4.csv"):
+        (results_dir / name).write_text("id,opinion,prompt_tokens,completion_tokens,cached_tokens\n")
+    captured = []
+    monkeypatch.setattr(prepare_data, "clean", lambda **kw: captured.append(kw))
+
+    prepare_data._clean_cli("weibo")
+
+    assert [Path(p).name for p in captured[0]["opinion_results_path"]] == [
+        "weibo_opinion_results.csv", "weibo_opinion_results_task2of4.csv"
+    ]

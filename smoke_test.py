@@ -341,10 +341,21 @@ def run_cli(*args):
 
 
 def read_results(platform):
-    return pd.read_csv(
-        OUTPUT_DIR / "analysis_results" / f"{platform}_opinion_results.csv",
-        dtype=str,
-        keep_default_na=False,
+    """All of a platform's results files (every run and task), file name -> rows."""
+    return {
+        path.name: pd.read_csv(path, dtype=str, keep_default_na=False)
+        for path in sorted((OUTPUT_DIR / "analysis_results").glob(f"{platform}_opinion_results*.csv"))
+    }
+
+
+def all_rows(snapshot):
+    return pd.concat(snapshot.values(), ignore_index=True)
+
+
+def new_rows(before, after):
+    """Rows appended to any results file between two read_results snapshots."""
+    return pd.concat(
+        [rows.iloc[len(before.get(name, [])):] for name, rows in after.items()], ignore_index=True
     )
 
 
@@ -395,18 +406,23 @@ def main():
     def check(name, ok, detail=""):
         checks.append((name, bool(ok), detail))
 
-    # Stage 1, then a second pass to exercise resume.
-    for platform in ("weibo", "twitter"):
-        run_cli("run_analysis", platform)
+    # Stage 1, then a second pass to exercise resume. Weibo first runs as one
+    # task and resumes as two (an earlier single run's file must count as done);
+    # Twitter runs as two tasks both times (tasks must never overlap).
+    two_tasks = [["--task_id", "1", "--num_tasks", "2"], ["--task_id", "2", "--num_tasks", "2"]]
+    run_cli("run_analysis", "weibo")
+    for task in two_tasks:
+        run_cli("run_analysis", "twitter", *task)
     first = {p: read_results(p) for p in ("weibo", "twitter")}
     requests_after_first = len(fake.requests) if fake else None
     for platform in ("weibo", "twitter"):
-        run_cli("run_analysis", platform)
+        for task in two_tasks:
+            run_cli("run_analysis", platform, *task)
     second = {p: read_results(p) for p in ("weibo", "twitter")}
 
     for platform in ("weibo", "twitter"):
         expected_ids = set(truth[(truth["platform"] == platform) & truth["sent"]]["id"])
-        got = first[platform]
+        got = all_rows(first[platform])
         check(
             f"[{platform}] each target-day post sent exactly once "
             "(off-day file and duplicate skipped; empty text sent for Weibo only, as before)",
@@ -414,9 +430,9 @@ def main():
             f"{len(got)} result rows, {len(expected_ids)} expected posts",
         )
         failed = got[got["opinion"].map(normalize_opinion).isna()]
-        appended = second[platform].iloc[len(got):]
+        appended = new_rows(first[platform], second[platform])
         check(
-            f"[{platform}] rerunning Stage 1 retries only the failed rows",
+            f"[{platform}] rerunning Stage 1 (as 2 tasks) retries only the failed rows",
             set(appended["id"]) == set(failed["id"]) and len(appended) == len(failed),
             f"{len(failed)} failed after first pass, {len(appended)} re-sent",
         )
@@ -433,15 +449,15 @@ def main():
             all(
                 normalize_opinion(v) is not None
                 for p in ("weibo", "twitter")
-                for v in first[p].loc[
-                    first[p]["id"].isin(truth[truth["text"].fillna("").str.startswith(FLAKY)]["id"]),
+                for v in all_rows(first[p]).loc[
+                    all_rows(first[p])["id"].isin(truth[truth["text"].fillna("").str.startswith(FLAKY)]["id"]),
                     "opinion",
                 ]
             ),
         )
         check(
             "token usage (incl. cached tokens nested in prompt_tokens_details) is recorded",
-            all((first[p]["cached_tokens"].astype(int) > 0).any() for p in ("weibo", "twitter")),
+            all((all_rows(first[p])["cached_tokens"].astype(int) > 0).any() for p in ("weibo", "twitter")),
         )
         check(
             "resume sent only the non-JSON posts again",
@@ -495,7 +511,7 @@ def main():
     if live:
         print("\n=== Live model labels vs. planted intent ===")
         for platform in ("weibo", "twitter"):
-            results = second[platform].drop_duplicates("id", keep="last")
+            results = all_rows(second[platform]).drop_duplicates("id", keep="last")
             labels = results.set_index("id")["opinion"].map(normalize_opinion)
             posts = truth[(truth["platform"] == platform) & truth["sent"]].set_index("id")
             valid = labels.dropna()

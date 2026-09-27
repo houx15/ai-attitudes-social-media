@@ -5,13 +5,16 @@ Usage:
     python run_analysis.py twitter
     python run_analysis.py weibo --start_date 2024-03-01 --end_date 2024-03-31
     python run_analysis.py weibo --target_days 1,10,20
+    python run_analysis.py twitter --task_id 2 --num_tasks 4   # one of 4 parallel tasks
 """
+
+from pathlib import Path
 
 from typing import Dict, List, Optional, Sequence, Union
 
 import fire
 
-from loaders import count_input_rows, day_files, iter_platform_days, parse_target_days
+from loaders import assign_task_files, count_input_rows, day_files, iter_platform_days, parse_target_days
 from openrouter_client import OpenRouterClient, analyze_stream
 
 
@@ -32,10 +35,13 @@ def analyze(
     timeout: int = 60,
     backoff_base_seconds: float = 0.01,
     date_substitutions: Optional[Dict[str, str]] = None,
+    task_id: int = 1,
+    num_tasks: int = 1,
 ) -> dict:
     files = day_files(
         platform, input_dir, filename_pattern, start_date, end_date, target_days, date_substitutions
     )
+    files = assign_task_files(files, task_id, num_tasks)
     if not files:
         print(f"No input files found for platform={platform} in range {start_date}..{end_date}")
         return {"total": 0, "skipped": 0, "completed": 0, "failed": 0}
@@ -50,13 +56,17 @@ def analyze(
             backoff_base_seconds=backoff_base_seconds,
         )
 
+    # A post labelled by any earlier run or task of this platform is not re-sent.
+    output_path = Path(output_path)
+    done_paths = sorted(set(output_path.parent.glob(f"{platform}_opinion_results*.csv")) | {output_path})
     summary = analyze_stream(
         client,
         iter_platform_days(platform, files),
-        output_path,
+        str(output_path),
         max_workers=workers,
-        desc=platform,
+        desc=platform if num_tasks == 1 else f"{platform} {task_id}/{num_tasks}",
         total_rows=count_input_rows(files),
+        done_paths=[str(p) for p in done_paths],
     )
     print(f"Stage 1 analysis summary for {platform}: {summary}")
     return summary
@@ -68,6 +78,8 @@ def main(
     end_date: Optional[str] = None,
     target_days: Optional[Union[str, int, Sequence[int]]] = None,
     workers: Optional[int] = None,
+    task_id: int = 1,
+    num_tasks: int = 1,
 ):
     import config
 
@@ -77,7 +89,8 @@ def main(
         if platform == "weibo"
         else config.TWITTER_FILENAME_PATTERN
     )
-    output_path = f"{config.OUTPUT_DIR}/analysis_results/{platform}_opinion_results.csv"
+    suffix = "" if num_tasks == 1 else f"_task{task_id}of{num_tasks}"
+    output_path = f"{config.OUTPUT_DIR}/analysis_results/{platform}_opinion_results{suffix}.csv"
     days = parse_target_days(target_days) if target_days is not None else config.TARGET_DAYS
 
     analyze(
@@ -96,6 +109,8 @@ def main(
         timeout=config.REQUEST_TIMEOUT,
         backoff_base_seconds=getattr(config, "BACKOFF_BASE_SECONDS", 2.0),
         date_substitutions=getattr(config, "DATE_SUBSTITUTIONS", {}).get(platform, {}),
+        task_id=task_id,
+        num_tasks=num_tasks,
     )
 
 
