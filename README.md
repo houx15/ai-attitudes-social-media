@@ -11,13 +11,23 @@ per-day parquet files produced by the sibling `youth-analysis` (Weibo) and
 
 ## Setup
 
+The environment is managed with [uv](https://docs.astral.sh/uv/). `uv sync` installs
+Python 3.12 (from `.python-version`) and the exact versions in `uv.lock` into `.venv/`.
+
 ```bash
-pip install -r requirements.txt
+uv sync
 cp config.example.py config.py
-# edit config.py: OPENROUTER_API_KEY, WEIBO_INPUT_DIR, TWITTER_INPUT_DIR
+# edit config.py: OPENROUTER_API_KEY, OPENROUTER_MODEL, WEIBO_INPUT_DIR, TWITTER_INPUT_DIR,
+# TWITTER_US_USERIDS_PATH, OUTPUT_DIR
 ```
 
-Run the test suite from the repo root with `pytest` (or `python -m pytest`).
+Run the test suite with `uv run pytest`. Every command below runs inside the environment
+via `uv run`.
+
+On a server in mainland China, if downloads are slow, point uv at mirrors, e.g.
+`UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple` for packages and
+`UV_PYTHON_INSTALL_MIRROR=<mirror>` for the Python download (or use a local Python with
+`uv sync --python /path/to/python3.12`).
 
 ## Smoke test before touching real data
 
@@ -26,8 +36,8 @@ the real CLI commands for all three stages against them. It writes a throwaway c
 into `smoke_output/` (gitignored), so your own `config.py` is never modified.
 
 ```bash
-python smoke_test.py          # offline: Stage 1 hits a local fake OpenRouter server (free)
-python smoke_test.py --live   # Stage 1 hits the real OpenRouter API using your config.py key/model
+uv run python smoke_test.py          # offline: Stage 1 hits a local fake OpenRouter server (free)
+uv run python smoke_test.py --live   # Stage 1 hits the real OpenRouter API using your config.py key/model
 ```
 
 Offline mode also plants a transient HTTP 500, a non-JSON reply, duplicate and empty
@@ -41,18 +51,18 @@ if any check fails; inspect the figures in `smoke_output/output/figures/`.
 
 ```bash
 # Stage 1: AI opinion analysis via OpenRouter (needs network access to OpenRouter)
-python run_analysis.py weibo
-python run_analysis.py twitter
+uv run python run_analysis.py weibo
+uv run python run_analysis.py twitter
 
 # Stage 2: clean + compute daily aggregates (raw mean / like-weighted / user-mean) + export figure data
-python prepare_data.py clean --platform weibo
-python prepare_data.py clean --platform twitter
-python prepare_data.py export
+uv run python prepare_data.py clean --platform weibo
+uv run python prepare_data.py clean --platform twitter
+uv run python prepare_data.py export
 
 # Stage 3: plot (sliding-window smoothing happens here only, figure_data itself stays unsmoothed)
-python plot_figures.py
-python plot_figures.py --window_size 5
-python plot_figures.py --use_smoothing False   # disable smoothing (equivalently: --nouse_smoothing)
+uv run python plot_figures.py
+uv run python plot_figures.py --window_size 5
+uv run python plot_figures.py --use_smoothing False   # disable smoothing (equivalently: --nouse_smoothing)
 ```
 
 Stages 1 and 2 both accept `--start_date`, `--end_date` and `--target_days` overrides

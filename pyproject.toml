@@ -1,0 +1,23 @@
+[project]
+name = "ai-attitudes-social-media"
+version = "0.1.0"
+description = "Unified Weibo/Twitter AI-opinion pipeline (single OpenRouter model and prompt)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fire>=0.6",
+    "matplotlib>=3.8",
+    "numpy>=1.26",
+    "openai>=1.40",
+    "pandas>=2.2,<3",
+    "pyarrow>=16",
+]
+
+[tool.uv]
+# Flat scripts, not an installable package.
+package = false
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
