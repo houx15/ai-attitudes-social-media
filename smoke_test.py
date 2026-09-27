@@ -227,9 +227,11 @@ class FakeOpenRouter:
     def base_url(self):
         return f"http://127.0.0.1:{self.server.server_address[1]}/v1"
 
-    def respond(self, model, system_prompt, text):
+    def respond(self, model, system_prompt, text, reasoning):
         with self.lock:
-            self.requests.append({"model": model, "system": system_prompt, "text": text})
+            self.requests.append(
+                {"model": model, "system": system_prompt, "text": text, "reasoning": reasoning}
+            )
             if text.startswith(FLAKY) and text not in self.flaky_failed:
                 self.flaky_failed.add(text)
                 return 500, None
@@ -249,7 +251,9 @@ class FakeOpenRouter:
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 messages = {m["role"]: m["content"] for m in body["messages"]}
                 text = messages["user"].removeprefix("Post text: ")
-                status, content = fake.respond(body["model"], messages["system"], text)
+                status, content = fake.respond(
+                    body["model"], messages["system"], text, body.get("reasoning")
+                )
                 if status != 200:
                     self._send(status, {"error": {"message": "mock transient failure"}})
                     return
@@ -419,8 +423,9 @@ def main():
 
     if fake:
         check(
-            "every request sent the canonical SYSTEM_PROMPT and the configured model",
-            all(r["system"] == SYSTEM_PROMPT and r["model"] == MOCK_MODEL for r in fake.requests),
+            "every request sent the canonical SYSTEM_PROMPT, the configured model, and reasoning off",
+            all(r["system"] == SYSTEM_PROMPT and r["model"] == MOCK_MODEL
+                and r["reasoning"] == {"effort": "none"} for r in fake.requests),
             f"{len(fake.requests)} requests",
         )
         check(
@@ -496,9 +501,15 @@ def main():
                        if v != CANNOT_TELL and c != CANNOT_TELL]
             same_sign = np.mean([np.sign(v) == np.sign(c) for v, c in numeric]) if numeric else float("nan")
             tokens = results[["prompt_tokens", "completion_tokens", "cached_tokens"]].astype(int).sum()
+            avg_completion = tokens["completion_tokens"] / max(len(results), 1)
             print(
                 f"[{platform}] {len(valid)}/{len(posts)} labeled, exact match {exact:.0%}, "
                 f"same direction {same_sign:.0%}, tokens {dict(tokens)}"
+            )
+            check(
+                f"[{platform}] reasoning is off (few output tokens per post)",
+                avg_completion < 50,
+                f"{avg_completion:.0f} output tokens per post on average",
             )
             check(f"[{platform}] the live model returned usable labels", len(valid) > 0,
                   "check OPENROUTER_MODEL slug and key" if len(valid) == 0 else "")

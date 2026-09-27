@@ -27,7 +27,7 @@ class FakeOpenAI:
             completions=SimpleNamespace(create=self._create)
         )
 
-    def _create(self, model, messages):
+    def _create(self, model, messages, **kwargs):
         self.call_count += 1
         if self._error_then_success is not None and self.call_count == 1:
             raise ConnectionError("simulated transient failure")
@@ -86,7 +86,7 @@ def test_analyze_one_gives_up_after_max_retries():
             self.call_count = 0
             self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
 
-        def _create(self, model, messages):
+        def _create(self, model, messages, **kwargs):
             self.call_count += 1
             raise ConnectionError("always fails")
 
@@ -261,7 +261,7 @@ def test_backoff_base_seconds_is_configurable(monkeypatch):
         def __init__(self):
             self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
 
-        def _create(self, model, messages):
+        def _create(self, model, messages, **kwargs):
             raise ConnectionError("always fails")
 
     client = OpenRouterClient(
@@ -327,7 +327,7 @@ def test_malformed_model_output_does_not_corrupt_results_csv(tmp_path):
             self._content_by_text = content_by_text
             self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
 
-        def _create(self, model, messages):
+        def _create(self, model, messages, **kwargs):
             user_text = messages[-1]["content"]
             for key, content in self._content_by_text.items():
                 if key in user_text:
@@ -390,3 +390,22 @@ def test_analyze_many_csv_write_is_quoted_even_for_unvalidated_values(tmp_path):
     assert len(saved) == 2
     assert saved.set_index("id").loc["b", "opinion"] == 'x,"y"\nz'
     assert load_processed_ids(str(results_path)) == set()
+
+
+def test_analyze_one_turns_reasoning_off():
+    captured = {}
+
+    class RecordingOpenAI:
+        def __init__(self):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+        def _create(self, model, messages, **kwargs):
+            captured.update(kwargs)
+            return _fake_response('{"opinion": 1}')
+
+    client = OpenRouterClient(
+        api_key="k", base_url="https://openrouter.ai/api/v1", model="m", client=RecordingOpenAI()
+    )
+    client.analyze_one("some text")
+
+    assert captured["extra_body"] == {"reasoning": {"effort": "none"}}

@@ -2,7 +2,7 @@
 
 Unified AI-opinion analysis pipeline for the Weibo (China) / Twitter (US) AI-attitudes
 paper. Both platforms are analyzed with the same OpenRouter model and the same prompt
-(see `prompts.py`), removing the need for the cross-lingual bias correction the old
+(see `prompts.py`), with reasoning turned off (`reasoning: {effort: none}`), removing the need for the cross-lingual bias correction the old
 two-model (GPT + Kimi) setup required.
 
 This repo does **not** crawl or keyword-filter data. It reads already-extracted,
@@ -33,7 +33,8 @@ python smoke_test.py --live   # Stage 1 hits the real OpenRouter API using your 
 Offline mode also plants a transient HTTP 500, a non-JSON reply, duplicate and empty
 posts, and an off-day file, and checks the daily metrics against independently computed
 ground truth. `--live` confirms your key and model slug work and prints how often the
-real model's labels agree with the planted intent, plus token usage. It exits non-zero
+real model's labels agree with the planted intent, plus token usage, and fails if the
+average output is over 50 tokens per post (a sign reasoning is still on). It exits non-zero
 if any check fails; inspect the figures in `smoke_output/output/figures/`.
 
 ## Usage — three independent stages (can run on different machines)

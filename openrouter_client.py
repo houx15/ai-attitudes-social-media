@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 VALID_NUMERIC_OPINIONS = {-2, -1, 0, 1, 2}
 CANNOT_TELL = "cannot tell"
 RESULTS_HEADER = ["id", "opinion", "prompt_tokens", "completion_tokens", "cached_tokens"]
+# Same for both platforms, like the prompt: the model answers directly, no thinking step.
+REASONING = {"effort": "none"}
 
 
 def normalize_opinion(value: Any) -> Optional[Union[int, str]]:
@@ -78,6 +80,7 @@ class OpenRouterClient:
                         {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user", "content": build_user_message(text)},
                     ],
+                    extra_body={"reasoning": REASONING},
                 )
                 response_text = response.choices[0].message.content.strip()
                 usage = response.usage
