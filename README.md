@@ -2,8 +2,9 @@
 
 Unified AI-opinion analysis pipeline for the Weibo (China) / Twitter (US) AI-attitudes
 paper. Both platforms are analyzed with the same OpenRouter model and the same prompt
-(see `prompts.py`), with reasoning turned off (`reasoning: {effort: none}`), removing the need for the cross-lingual bias correction the old
-two-model (GPT + Kimi) setup required.
+(see `prompts.py`), with reasoning turned off (`reasoning: {effort: none}`). This
+removes the need for the cross-lingual bias correction the old two-model (GPT + Kimi)
+setup required.
 
 This repo does **not** crawl or keyword-filter data. It reads already-extracted,
 per-day parquet files produced by the sibling `youth-analysis` (Weibo) and
@@ -47,48 +48,72 @@ real model's labels agree with the planted intent, plus token usage, and fails i
 average output is over 50 tokens per post (a sign reasoning is still on). It exits non-zero
 if any check fails; inspect the figures in `smoke_output/output/figures/`.
 
-## Usage — three independent stages (can run on different machines)
+## Usage — Twitter server, Weibo server, then your own machine
+
+Twitter and Weibo data live on different servers. Each server labels and aggregates its
+own platform; your machine merges the two small daily files and plots.
+
+**Twitter server** (`config.py`: key, `TWITTER_INPUT_DIR`, `TWITTER_US_USERIDS_PATH`, `OUTPUT_DIR`)
 
 ```bash
-# Stage 1: AI opinion analysis via OpenRouter (needs network access to OpenRouter)
-uv run python run_analysis.py weibo
-uv run python run_analysis.py twitter
-
-# Stage 2: clean + compute daily aggregates (raw mean / like-weighted / user-mean) + export figure data
-uv run python prepare_data.py clean --platform weibo
-uv run python prepare_data.py clean --platform twitter
-uv run python prepare_data.py export
-
-# Stage 3: plot (sliding-window smoothing happens here only, figure_data itself stays unsmoothed)
-uv run python plot_figures.py
-uv run python plot_figures.py --window_size 5
-uv run python plot_figures.py --use_smoothing False   # disable smoothing (equivalently: --nouse_smoothing)
+uv run python run_analysis.py twitter                  # Stage 1: label tweets via OpenRouter (resumable)
+uv run python prepare_data.py clean --platform twitter  # Stage 2: -> OUTPUT_DIR/twitter_daily_opinion.parquet
 ```
 
-Stages 1 and 2 both accept `--start_date`, `--end_date` and `--target_days` overrides
-(e.g. `--target_days 1,10,20`); if you override them for Stage 1, pass the **same**
-values to Stage 2 so both stages cover the same sample. `clean` prints a coverage line
-(metadata rows loaded / matched an opinion result / valid numeric opinion) so a
-mismatched or partial run is visible.
+**Weibo server** (`config.py`: key, `WEIBO_INPUT_DIR`, `OUTPUT_DIR`)
 
-Twitter is always restricted to US users: `clean --platform twitter` keeps only authors
-listed in `TWITTER_US_USERIDS_PATH` (the old `--location us`). Stage 1 still analyzes all
-tweets, as before.
+```bash
+uv run python run_analysis.py weibo
+uv run python prepare_data.py clean --platform weibo    # -> OUTPUT_DIR/weibo_daily_opinion.parquet
+```
 
-Sampled days are the 1st/10th/20th of each month. Where a platform's data is missing on
-a nominal day, `DATE_SUBSTITUTIONS` in `config.py` names the nearby day that was crawled
-instead (Weibo: 2024-02-29 for 2024-03-01, 2024-10-02 for 2024-10-01). Those posts keep
-their actual date, and each platform is smoothed over its own dates, as before.
+**Your machine** (`config.py`: only `OUTPUT_DIR` is read). Download both
+`*_daily_opinion.parquet` files into `OUTPUT_DIR`, then:
+
+```bash
+uv run python prepare_data.py export   # -> figure_data.parquet / .csv (both platforms, unsmoothed)
+uv run python plot_figures.py          # -> figures/*_comparison_smoothed3d_<date>.pdf (+ plotted points .csv)
+uv run python plot_figures.py --window_size 5
+uv run python plot_figures.py --use_smoothing False   # -> *_raw_<date>.pdf (equivalently: --nouse_smoothing)
+```
+
+Don't point `OUTPUT_DIR` at the old `twitterapi-io/sentiment_results`: the daily files
+share the legacy names and would overwrite the published results.
+
+### Stage 1 (`run_analysis.py`)
+
+- Needs network access to `openrouter.ai`; stages 2–3 run offline.
+- Resumable: rerunning skips posts that already have a valid label and retries failed
+  ones. Results append to `OUTPUT_DIR/analysis_results/{platform}_opinion_results.csv`.
+- Shows a progress bar (done/total, speed, ETA, completed/failed, tokens in/out) and
+  prints token totals for the run and for all runs so far. Under `nohup ... > log` the
+  bar refreshes every 30s.
+
+### Stage 2 (`prepare_data.py clean`)
+
+- Re-reads post metadata (user id, like counts, dates) from the platform's raw input
+  directory, so run it on the same server as Stage 1.
+- Computes three daily metrics: raw mean (`avg_opinion`), like-weighted mean
+  (`weighted_opinion`, weight = likes + 1), and user-level mean (`user_avg_opinion`,
+  mean of each user's daily mean, the main result).
+- Prints a coverage line (metadata rows loaded / matched a label / valid numeric
+  opinion) so a partial or mismatched run is visible.
+- Twitter is always restricted to US users listed in `TWITTER_US_USERIDS_PATH` (the old
+  `--location us`). Stage 1 still labels all tweets, as before.
+
+### Dates
+
+Sampled days are the 1st/10th/20th of each month between `START_DATE` and `END_DATE`.
+Where a platform's data is missing on a nominal day, `DATE_SUBSTITUTIONS` names the
+nearby day that was crawled instead (Weibo: 2024-02-29 for 2024-03-01, 2024-10-02 for
+2024-10-01). Those posts keep their actual date, and each platform is smoothed over its
+own dates, as before. Stages 1 and 2 accept `--start_date`, `--end_date` and
+`--target_days` overrides (e.g. `--target_days 1,10,20`); pass the **same** values to
+both stages.
+
+### Consistency with the legacy code
 
 Everything except the prompt and the LLM caller follows the legacy scripts
 (`youth-analysis/ai_sentiment_analyzer.py`, `twitterapi-io/batch_sentiment_analysis.py`,
-`twitterapi-io/plot.py`): same input files, dates, dedup, empty-text rules, weights, three
-metrics, and figure style and file names.
-
-Stage 2 (`clean`) re-reads post metadata (user id, like counts, dates) through the same
-loaders as Stage 1, so the machine running Stage 2 needs read access to **both
-platforms' raw input directories** (`WEIBO_INPUT_DIR`, `TWITTER_INPUT_DIR`), not just
-Stage 1's `analysis_results/*.csv` outputs.
-
-Outputs land under `output/`: `analysis_results/{platform}_opinion_results.csv`,
-`{platform}_daily_opinion.parquet`, `figure_data.parquet`/`.csv`, `figures/*.pdf`.
+`twitterapi-io/plot.py`): same input files, dates, dedup, empty-text rules, weights,
+three metrics, and figure style and file names.
