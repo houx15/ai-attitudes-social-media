@@ -8,6 +8,7 @@ Usage:
 """
 
 import json
+from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Union
 
@@ -21,7 +22,10 @@ from openrouter_client import normalize_opinion
 def _load_opinions(opinion_results_path: Union[str, List[str]]) -> pd.DataFrame:
     paths = [opinion_results_path] if isinstance(opinion_results_path, str) else opinion_results_path
     opinions = pd.concat(
-        [pd.read_csv(p, usecols=["id", "opinion"], dtype={"id": str}) for p in paths],
+        [
+            pd.read_csv(p, usecols=lambda c: c in ("id", "opinion", "provider"), dtype={"id": str, "provider": str})
+            for p in paths
+        ],
         ignore_index=True,
     )
     # A retried post appears again (later in its file, or in another task's
@@ -59,6 +63,7 @@ def clean(
             kept_user_ids = json.load(f)
 
     counts = {"loaded": 0, "matched": 0, "user_filtered": 0, "valid": 0}
+    providers = Counter()
     kept_users = set()
     date_parts, user_parts = [], []
     for frame in iter_platform_days(platform, files, with_text=False):
@@ -74,6 +79,10 @@ def clean(
         merged = merged.assign(opinion=pd.to_numeric(merged["opinion"], errors="coerce"))
         merged = merged.dropna(subset=["opinion"])
         counts["valid"] += len(merged)
+        if "provider" in merged.columns:
+            providers.update(merged["provider"].fillna("unknown"))
+        else:
+            providers["unknown"] += len(merged)
 
         weight_raw = pd.to_numeric(merged["weight_raw"], errors="coerce")
         # Legacy behaviour differs per platform: Weibo filled a missing like count
@@ -108,6 +117,7 @@ def clean(
         f"{counts['matched']} matched an opinion result, "
         f"{counts['valid']} with a valid numeric opinion"
     )
+    print("Labels by provider: " + ", ".join(f"{name} {n}" for name, n in providers.most_common()))
 
     if date_parts:
         by_date = pd.concat(date_parts).groupby(level="date").sum()

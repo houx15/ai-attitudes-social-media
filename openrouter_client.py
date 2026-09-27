@@ -20,9 +20,21 @@ logger = logging.getLogger(__name__)
 
 VALID_NUMERIC_OPINIONS = {-2, -1, 0, 1, 2}
 CANNOT_TELL = "cannot tell"
-RESULTS_HEADER = ["id", "opinion", "prompt_tokens", "completion_tokens", "cached_tokens"]
-# Same for both platforms, like the prompt: the model answers directly, no thinking step.
+RESULTS_HEADER = ["id", "opinion", "prompt_tokens", "completion_tokens", "cached_tokens", "provider"]
+# Fixed for every request on both platforms, like the prompt:
+# - no thinking step, and deterministic decoding;
+# - one upstream provider (fp8), never silently switching: if it is unavailable
+#   the request fails and is retried on the next run.
 REASONING = {"effort": "none"}
+TEMPERATURE = 0
+PROVIDER = {"only": ["deepinfra"], "allow_fallbacks": False}
+
+
+def request_options() -> Dict[str, Any]:
+    return {
+        "temperature": TEMPERATURE,
+        "extra_body": {"reasoning": REASONING, "provider": PROVIDER},
+    }
 
 
 def normalize_opinion(value: Any) -> Optional[Union[int, str]]:
@@ -89,7 +101,7 @@ class OpenRouterClient:
                         {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user", "content": build_user_message(text)},
                     ],
-                    extra_body={"reasoning": REASONING},
+                    **request_options(),
                 )
                 response_text = response.choices[0].message.content.strip()
                 usage = response.usage
@@ -110,7 +122,8 @@ class OpenRouterClient:
                     if isinstance(parsed, dict):
                         opinion = normalize_opinion(parsed.get("opinion"))
 
-                return {"opinion": opinion, **token_stats}
+                provider = getattr(response, "provider", None) or ""
+                return {"opinion": opinion, **token_stats, "provider": provider}
             except Exception as e:
                 last_error = e
                 if attempt < self.max_retries:
@@ -122,6 +135,7 @@ class OpenRouterClient:
             "prompt_tokens": 0,
             "completion_tokens": 0,
             "cached_tokens": 0,
+            "provider": "",
         }
 
 
@@ -199,6 +213,15 @@ def analyze_stream(
     run_tokens = {column: 0 for column in TOKEN_COLUMNS}
     write_lock = threading.Lock()
     write_header = not path.exists() or path.stat().st_size == 0
+    if not write_header:
+        with open(path, "r", encoding="utf-8", newline="") as f:
+            existing_header = next(csv.reader(f), [])
+        if existing_header != RESULTS_HEADER:
+            raise ValueError(
+                f"{path} was written in an older format without the provider column. "
+                "Move it out of analysis_results/ so its posts are re-labelled by the "
+                "pinned provider, then rerun."
+            )
 
     def process_row(row_id, row_text):
         try:
@@ -210,6 +233,7 @@ def analyze_stream(
                 "prompt_tokens": 0,
                 "completion_tokens": 0,
                 "cached_tokens": 0,
+                "provider": "",
             }
         opinion_value = "" if result["opinion"] is None else result["opinion"]
         nonlocal write_header
@@ -226,6 +250,7 @@ def analyze_stream(
                         result["prompt_tokens"],
                         result["completion_tokens"],
                         result["cached_tokens"],
+                        result.get("provider") or "",
                     ]
                 )
         return result

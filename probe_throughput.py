@@ -1,13 +1,13 @@
 """Measure OpenRouter throughput for the configured model before a large run.
 
-Sends bursts of real classification requests (canonical prompt, reasoning off)
-at several concurrency levels and reports throughput, latency, errors, and
-which upstream providers answered. Uses the key/model in config.py. SDK retries
-are off so rate limiting shows up as errors instead of being hidden.
+Sends bursts of real classification requests with exactly the pipeline's
+settings (canonical prompt, reasoning off, temperature 0, pinned provider) at
+several concurrency levels and reports throughput, latency, errors, and which
+provider answered. Uses the key/model in config.py. SDK retries are off so rate
+limiting shows up as errors instead of being hidden.
 
     uv run python probe_throughput.py                       # concurrency 8,32,64; 96 requests each
     uv run python probe_throughput.py --concurrency 16,128 --requests 200
-    uv run python probe_throughput.py --provider deepseek   # only the given provider(s)
 """
 
 import argparse
@@ -19,7 +19,7 @@ import numpy as np
 from openai import OpenAI
 
 import config
-from openrouter_client import REASONING, normalize_opinion
+from openrouter_client import PROVIDER, normalize_opinion, request_options
 from prompts import SYSTEM_PROMPT, build_user_message
 
 SAMPLE_POSTS = [
@@ -32,10 +32,7 @@ SAMPLE_POSTS = [
 ]
 
 
-def one_request(client, provider_only):
-    extra_body = {"reasoning": REASONING}
-    if provider_only:
-        extra_body["provider"] = {"only": provider_only, "allow_fallbacks": False}
+def one_request(client):
     text = SAMPLE_POSTS[int(time.time() * 1000) % len(SAMPLE_POSTS)]
     start = time.time()
     try:
@@ -45,7 +42,7 @@ def one_request(client, provider_only):
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": build_user_message(text)},
             ],
-            extra_body=extra_body,
+            **request_options(),
         )
         content = response.choices[0].message.content or ""
         valid = normalize_opinion(_opinion(content)) is not None
@@ -71,9 +68,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument("--concurrency", default="8,32,64")
     parser.add_argument("--requests", type=int, default=96)
-    parser.add_argument("--provider", default=None, help="comma-separated provider slugs to restrict to")
     args = parser.parse_args()
-    provider_only = args.provider.split(",") if args.provider else None
 
     client = OpenAI(
         api_key=config.OPENROUTER_API_KEY,
@@ -81,11 +76,11 @@ def main():
         timeout=config.REQUEST_TIMEOUT,
         max_retries=0,
     )
-    print(f"model {config.OPENROUTER_MODEL}, providers {provider_only or 'OpenRouter default routing'}\n")
+    print(f"model {config.OPENROUTER_MODEL}, provider routing {PROVIDER}\n")
     for concurrency in [int(c) for c in args.concurrency.split(",")]:
         start = time.time()
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
-            results = list(pool.map(lambda _: one_request(client, provider_only), range(args.requests)))
+            results = list(pool.map(lambda _: one_request(client), range(args.requests)))
         wall = time.time() - start
         latencies = np.array([r[0] for r in results if r[1] == "ok"])
         outcomes = Counter(r[1] for r in results)

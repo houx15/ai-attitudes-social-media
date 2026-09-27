@@ -2,9 +2,11 @@
 
 Unified AI-opinion analysis pipeline for the Weibo (China) / Twitter (US) AI-attitudes
 paper. Both platforms are analyzed with the same OpenRouter model and the same prompt
-(see `prompts.py`), with reasoning turned off (`reasoning: {effort: none}`). This
+(see `prompts.py`), with reasoning off, temperature 0, and every request pinned to one
+upstream provider (DeepInfra, fp8, no fallback), all fixed in `openrouter_client.py`. This
 removes the need for the cross-lingual bias correction the old two-model (GPT + Kimi)
-setup required.
+setup required. Each result row records the provider that answered, and `clean` prints
+the provider breakdown of the labels it used.
 
 This repo does **not** crawl or keyword-filter data. It reads already-extracted,
 per-day parquet files produced by the sibling `youth-analysis` (Weibo) and
@@ -86,8 +88,8 @@ share the legacy names and would overwrite the published results.
 - Reads one day file at a time and keeps at most `MAX_WORKERS × 4` requests queued, so
   memory stays flat for millions of posts (Ctrl-C stops promptly; rerun to resume).
 - **Speed = total requests in flight.** Each process sends `MAX_WORKERS` requests at
-  once. Measured on 2026-09-26 (paid key, no rate limit, `probe_throughput.py`):
-  ~10 posts/s at 8 in flight, ~27/s at 32, ~66/s at 128, with no rate-limit errors.
+  once. Measured on 2026-09-26 with the pipeline's settings (DeepInfra pinned,
+  `probe_throughput.py`): ~23 posts/s at 32 in flight and ~52/s at 128, no errors.
   Rerun `uv run python probe_throughput.py` from each server before a big run.
 - **Split into parallel tasks** with `--task_id i --num_tasks n` (1-based), e.g. 4 tasks
   × `MAX_WORKERS=32` ≈ 128 in flight:
@@ -104,6 +106,9 @@ share the legacy names and would overwrite the published results.
   **any** of the platform's results files, so an earlier single run's
   `{platform}_opinion_results.csv` counts as done (stop it before starting the tasks). Use
   the same `--num_tasks` for all tasks of one run. `clean` reads all the files.
+- Results files from before provider recording (no `provider` column) are refused
+  when appending: move such a file out of `analysis_results/` so its posts are
+  re-labelled by the pinned provider.
 - Resumable: rerunning skips posts that already have a valid label and retries failed
   ones. Results append to `OUTPUT_DIR/analysis_results/{platform}_opinion_results.csv`.
 - Shows a progress bar (done/total, speed, ETA, completed/failed, tokens in/out) and

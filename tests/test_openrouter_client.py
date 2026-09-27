@@ -139,7 +139,7 @@ def test_analyze_many_writes_results_csv(tmp_path):
 
 def test_analyze_many_skips_already_processed_ids(tmp_path):
     results_path = tmp_path / "results.csv"
-    results_path.write_text("id,opinion,prompt_tokens,completion_tokens,cached_tokens\na,1,1,1,0\n")
+    results_path.write_text("id,opinion,prompt_tokens,completion_tokens,cached_tokens,provider\na,1,1,1,0,DeepInfra\n")
 
     df = pd.DataFrame({"id": ["a", "b"], "text": ["text a", "text b"]})
     client = CountingFakeClient()
@@ -221,9 +221,9 @@ def test_analyze_many_retries_row_with_empty_opinion_on_resume(tmp_path):
     # (B) a row that failed on a previous run must be re-sent, not skipped
     results_path = tmp_path / "results.csv"
     results_path.write_text(
-        "id,opinion,prompt_tokens,completion_tokens,cached_tokens\n"
-        "a,,0,0,0\n"
-        "b,1,1,1,0\n"
+        "id,opinion,prompt_tokens,completion_tokens,cached_tokens,provider\n"
+        "a,,0,0,0,\n"
+        "b,1,1,1,0,DeepInfra\n"
     )
     df = pd.DataFrame({"id": ["a", "b"], "text": ["text a", "text b"]})
     client = CountingFakeClient()
@@ -360,7 +360,7 @@ def test_malformed_model_output_does_not_corrupt_results_csv(tmp_path):
     assert summary["failed"] == 3
 
     saved = pd.read_csv(results_path, dtype=str)
-    assert list(saved.columns) == ["id", "opinion", "prompt_tokens", "completion_tokens", "cached_tokens"]
+    assert list(saved.columns) == ["id", "opinion", "prompt_tokens", "completion_tokens", "cached_tokens", "provider"]
     assert len(saved) == 4
     assert load_processed_ids(str(results_path)) == {"a"}
 
@@ -392,7 +392,7 @@ def test_analyze_many_csv_write_is_quoted_even_for_unvalidated_values(tmp_path):
     assert load_processed_ids(str(results_path)) == set()
 
 
-def test_analyze_one_turns_reasoning_off():
+def test_analyze_one_pins_provider_temperature_and_reasoning():
     captured = {}
 
     class RecordingOpenAI:
@@ -408,12 +408,16 @@ def test_analyze_one_turns_reasoning_off():
     )
     client.analyze_one("some text")
 
-    assert captured["extra_body"] == {"reasoning": {"effort": "none"}}
+    assert captured["extra_body"] == {
+        "reasoning": {"effort": "none"},
+        "provider": {"only": ["deepinfra"], "allow_fallbacks": False},
+    }
+    assert captured["temperature"] == 0
 
 
 def test_analyze_many_shows_progress_and_resume_counts(tmp_path, capsys):
     results_path = tmp_path / "results.csv"
-    results_path.write_text("id,opinion,prompt_tokens,completion_tokens,cached_tokens\na,1,1,1,0\n")
+    results_path.write_text("id,opinion,prompt_tokens,completion_tokens,cached_tokens,provider\na,1,1,1,0,DeepInfra\n")
     df = pd.DataFrame({"id": ["a", "b", "c"], "text": ["ta", "tb", "tc"]})
 
     analyze_many(CountingFakeClient(), df, str(results_path), max_workers=2, desc="weibo")
@@ -426,7 +430,7 @@ def test_analyze_many_shows_progress_and_resume_counts(tmp_path, capsys):
 
 def test_analyze_many_reports_token_usage_live_and_at_the_end(tmp_path, capsys):
     results_path = tmp_path / "results.csv"
-    results_path.write_text("id,opinion,prompt_tokens,completion_tokens,cached_tokens\na,1,400,6,100\n")
+    results_path.write_text("id,opinion,prompt_tokens,completion_tokens,cached_tokens,provider\na,1,400,6,100,DeepInfra\n")
     df = pd.DataFrame({"id": ["a", "b", "c"], "text": ["ta", "tb", "tc"]})
 
     analyze_many(CountingFakeClient(), df, str(results_path), max_workers=2, desc="weibo")
@@ -478,3 +482,35 @@ def test_analyze_stream_reads_the_next_day_only_when_the_current_one_is_nearly_d
     # before day 2 is even read.
     assert processed_when_day2_requested[0] >= 92
     assert summary == {"total": 102, "skipped": 0, "completed": 102, "failed": 0}
+
+
+def test_analyze_one_records_which_provider_answered():
+    response = _fake_response('{"opinion": 1}')
+    response.provider = "DeepInfra"
+    client = OpenRouterClient(
+        api_key="k", base_url="https://openrouter.ai/api/v1", model="m", client=FakeOpenAI(responses=[response])
+    )
+
+    assert client.analyze_one("some text")["provider"] == "DeepInfra"
+
+
+def test_analyze_many_writes_the_provider_column(tmp_path):
+    class ProviderClient:
+        def analyze_one(self, text):
+            return {"opinion": 1, "prompt_tokens": 1, "completion_tokens": 1, "cached_tokens": 0,
+                    "provider": "DeepInfra"}
+
+    results_path = tmp_path / "results.csv"
+    analyze_many(ProviderClient(), pd.DataFrame({"id": ["a"], "text": ["t"]}), str(results_path))
+
+    saved = pd.read_csv(results_path, dtype=str)
+    assert list(saved.columns) == ["id", "opinion", "prompt_tokens", "completion_tokens", "cached_tokens", "provider"]
+    assert saved["provider"].tolist() == ["DeepInfra"]
+
+
+def test_analyze_many_refuses_to_append_to_an_old_format_results_file(tmp_path):
+    results_path = tmp_path / "results.csv"
+    results_path.write_text("id,opinion,prompt_tokens,completion_tokens,cached_tokens\na,1,1,1,0\n")
+
+    with pytest.raises(ValueError, match="provider"):
+        analyze_many(CountingFakeClient(), pd.DataFrame({"id": ["b"], "text": ["t"]}), str(results_path))

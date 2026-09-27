@@ -24,7 +24,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from openrouter_client import normalize_opinion
+from openrouter_client import PROVIDER, normalize_opinion
 from prompts import SYSTEM_PROMPT
 
 REPO = Path(__file__).resolve().parent
@@ -227,10 +227,12 @@ class FakeOpenRouter:
     def base_url(self):
         return f"http://127.0.0.1:{self.server.server_address[1]}/v1"
 
-    def respond(self, model, system_prompt, text, reasoning):
+    def respond(self, model, system_prompt, text, body):
         with self.lock:
             self.requests.append(
-                {"model": model, "system": system_prompt, "text": text, "reasoning": reasoning}
+                {"model": model, "system": system_prompt, "text": text,
+                 "reasoning": body.get("reasoning"), "temperature": body.get("temperature"),
+                 "provider": body.get("provider")}
             )
             if text.startswith(FLAKY) and text not in self.flaky_failed:
                 self.flaky_failed.add(text)
@@ -251,9 +253,7 @@ class FakeOpenRouter:
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 messages = {m["role"]: m["content"] for m in body["messages"]}
                 text = messages["user"].removeprefix("Post text: ")
-                status, content = fake.respond(
-                    body["model"], messages["system"], text, body.get("reasoning")
-                )
+                status, content = fake.respond(body["model"], messages["system"], text, body)
                 if status != 200:
                     self._send(status, {"error": {"message": "mock transient failure"}})
                     return
@@ -264,6 +264,7 @@ class FakeOpenRouter:
                         "object": "chat.completion",
                         "created": 0,
                         "model": body["model"],
+                        "provider": "MockProvider",
                         "choices": [
                             {
                                 "index": 0,
@@ -439,9 +440,11 @@ def main():
 
     if fake:
         check(
-            "every request sent the canonical SYSTEM_PROMPT, the configured model, and reasoning off",
+            "every request sent the canonical SYSTEM_PROMPT, the configured model, reasoning off, "
+            "temperature 0 and the pinned provider",
             all(r["system"] == SYSTEM_PROMPT and r["model"] == MOCK_MODEL
-                and r["reasoning"] == {"effort": "none"} for r in fake.requests),
+                and r["reasoning"] == {"effort": "none"} and r["temperature"] == 0
+                and r["provider"] == PROVIDER for r in fake.requests),
             f"{len(fake.requests)} requests",
         )
         check(
@@ -454,6 +457,12 @@ def main():
                     "opinion",
                 ]
             ),
+        )
+        labelled = pd.concat([all_rows(first[p]) for p in ("weibo", "twitter")])
+        labelled = labelled[labelled["opinion"].map(normalize_opinion).notna()]
+        check(
+            "every labelled post records the provider that answered",
+            (labelled["provider"] == "MockProvider").all(),
         )
         check(
             "token usage (incl. cached tokens nested in prompt_tokens_details) is recorded",
@@ -521,6 +530,12 @@ def main():
                        if v != CANNOT_TELL and c != CANNOT_TELL]
             same_sign = np.mean([np.sign(v) == np.sign(c) for v, c in numeric]) if numeric else float("nan")
             tokens = results[["prompt_tokens", "completion_tokens", "cached_tokens"]].astype(int).sum()
+            answered_by = results.loc[labels.notna().reindex(results["id"]).values, "provider"].value_counts()
+            check(
+                f"[{platform}] every label came from the pinned provider",
+                set(answered_by.index) <= {"DeepInfra"} and len(answered_by) > 0,
+                f"providers {dict(answered_by)}",
+            )
             avg_completion = tokens["completion_tokens"] / max(len(results), 1)
             print(
                 f"[{platform}] {len(valid)}/{len(posts)} labeled, exact match {exact:.0%}, "

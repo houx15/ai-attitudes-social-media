@@ -568,3 +568,27 @@ def test_clean_cli_reads_all_of_a_platforms_results_files(tmp_path, monkeypatch)
     assert [Path(p).name for p in captured[0]["opinion_results_path"]] == [
         "weibo_opinion_results.csv", "weibo_opinion_results_task2of4.csv"
     ]
+
+
+def test_clean_reports_which_providers_labelled_the_posts(tmp_path, capsys):
+    pd.DataFrame({
+        "weibo_id": ["w1", "w2", "w3"], "user_id": [1, 2, 3], "weibo_content": ["a", "b", "c"], "zan": [0, 0, 0],
+    }).to_parquet(tmp_path / "2024-03-01.parquet", index=False)
+    results_path = tmp_path / "weibo_opinion_results.csv"
+    results_path.write_text(
+        "id,opinion,prompt_tokens,completion_tokens,cached_tokens,provider\n"
+        "w1,1,1,1,0,DeepInfra\nw2,2,1,1,0,DeepInfra\nw3,0,1,1,0,Together\n"
+    )
+
+    clean(
+        platform="weibo",
+        input_dir=str(tmp_path),
+        filename_pattern="{date}.parquet",
+        start_date="2024-03-01",
+        end_date="2024-03-05",
+        target_days=[1, 10, 20],
+        opinion_results_path=str(results_path),
+        output_path=str(tmp_path / "weibo_daily_opinion.parquet"),
+    )
+
+    assert "Labels by provider: DeepInfra 2, Together 1" in capsys.readouterr().out
