@@ -58,18 +58,19 @@ own platform; your machine merges the two small daily files and plots.
 **Twitter server** (`config.py`: key, `TWITTER_INPUT_DIR`, `TWITTER_US_USERIDS_PATH`, `OUTPUT_DIR`)
 
 ```bash
-conda activate opinion                                  # the scripts use the active env's python
-./run_twitter.sh                                        # Stage 1: 4 parallel background tasks (resumable)
-tail -f logs/twitter_task*of4.log                       # watch; when all tasks have finished:
-uv run python prepare_data.py clean --platform twitter  # Stage 2: -> OUTPUT_DIR/twitter_daily_opinion.parquet
+conda activate opinion                          # the scripts use the active env's python
+./run_twitter.sh                                # Stage 1: 4 parallel background tasks (resumable)
+tail -f logs/twitter_task*of4.log               # watch; when all tasks have finished:
+python prepare_data.py clean --platform twitter # Stage 2: -> OUTPUT_DIR/twitter_daily_opinion.parquet
 ```
 
 **Weibo server** (`config.py`: key, `WEIBO_INPUT_DIR`, `OUTPUT_DIR`)
 
 ```bash
+conda activate opinion
 ./run_weibo.sh
 tail -f logs/weibo_task*of4.log
-uv run python prepare_data.py clean --platform weibo    # -> OUTPUT_DIR/weibo_daily_opinion.parquet
+python prepare_data.py clean --platform weibo   # -> OUTPUT_DIR/weibo_daily_opinion.parquet
 ```
 
 **Your machine** (`config.py`: only `OUTPUT_DIR` is read). Download both
