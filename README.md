@@ -58,6 +58,7 @@ own platform; your machine merges the two small daily files and plots.
 **Twitter server** (`config.py`: key, `TWITTER_INPUT_DIR`, `TWITTER_US_USERIDS_PATH`, `OUTPUT_DIR`)
 
 ```bash
+conda activate opinion                                  # the scripts use the active env's python
 ./run_twitter.sh                                        # Stage 1: 4 parallel background tasks (resumable)
 tail -f logs/twitter_task*of4.log                       # watch; when all tasks have finished:
 uv run python prepare_data.py clean --platform twitter  # Stage 2: -> OUTPUT_DIR/twitter_daily_opinion.parquet
@@ -93,7 +94,9 @@ share the legacy names and would overwrite the published results.
   once. Measured on 2026-09-26 with the pipeline's settings (DeepInfra pinned,
   `probe_throughput.py`): ~23 posts/s at 32 in flight and ~52/s at 128, no errors.
   Rerun `uv run python probe_throughput.py` from each server before a big run.
-- **Parallel tasks.** `./run_twitter.sh [N]` / `./run_weibo.sh [N]` (default N = 4) start
+- **Parallel tasks.** `./run_twitter.sh [N]` / `./run_weibo.sh [N]` (default N = 4) run
+  with the active environment's `python` (e.g. after `conda activate opinion`; with uv,
+  `uv run ./run_weibo.sh`; or set `PYTHON=/path/to/python`). They start
   N background tasks with `nohup`, one log each in `logs/`, and refuse to start if that
   platform is already running. Stop with `pkill -f 'run_analysis.py twitter'` (labels so
   far are saved); rerun the script to resume. Under the hood each task is

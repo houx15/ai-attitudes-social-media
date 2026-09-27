@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Start Stage 1 (LLM labelling) for one platform as NUM_TASKS parallel background tasks.
 # Usage: scripts/start_stage1.sh {weibo|twitter} [NUM_TASKS]   (default 4)
-# Requests in flight ~= NUM_TASKS x MAX_WORKERS (config.py). Rerun to resume.
+# Uses the `python` of the active environment, so activate it first, e.g.
+#   conda activate opinion && ./run_twitter.sh
+# (or set PYTHON=/path/to/python). Requests in flight ~= NUM_TASKS x MAX_WORKERS
+# (config.py). Rerun to resume.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -16,12 +19,17 @@ if [ -n "$running" ]; then
   exit 1
 fi
 
-# Build the environment once, before the tasks start in parallel.
-uv sync --frozen --quiet
+PYTHON="${PYTHON:-python}"
+if ! command -v "$PYTHON" > /dev/null; then
+  echo "'$PYTHON' not found; activate your environment first (e.g. conda activate opinion)" >&2
+  exit 1
+fi
+echo "Using $(command -v "$PYTHON") ($("$PYTHON" --version 2>&1))"
+
 mkdir -p logs
 for i in $(seq 1 "$NUM_TASKS"); do
   log="logs/${PLATFORM}_task${i}of${NUM_TASKS}.log"
-  nohup uv run --frozen python run_analysis.py "$PLATFORM" --task_id "$i" --num_tasks "$NUM_TASKS" \
+  nohup "$PYTHON" run_analysis.py "$PLATFORM" --task_id "$i" --num_tasks "$NUM_TASKS" \
     > "$log" 2>&1 &
   echo "started $PLATFORM task $i/$NUM_TASKS (pid $!) -> $log"
 done
