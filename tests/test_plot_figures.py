@@ -11,8 +11,8 @@ from plot_figures import apply_sliding_window, main, plot_metric
 
 
 def test_apply_sliding_window_centered_mean():
-    df = pd.DataFrame({"date": pd.date_range("2024-03-01", periods=5), "metric": [1, 2, 3, 4, 5]})
-    smoothed = apply_sliding_window(df, "metric", window_size=3)
+    series = pd.Series([1, 2, 3, 4, 5], index=pd.date_range("2024-03-01", periods=5))
+    smoothed = apply_sliding_window(series, window_size=3)
     assert smoothed.tolist() == pytest.approx([1.5, 2.0, 3.0, 4.0, 4.5])
 
 

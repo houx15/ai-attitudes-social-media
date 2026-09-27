@@ -34,19 +34,9 @@ METRICS = [
 ]
 
 
-def apply_sliding_window(df: pd.DataFrame, metric: str, window_size: int = 3) -> pd.Series:
-    df = df.sort_values("date")
-    return df[metric].rolling(window=window_size, center=True, min_periods=1).mean()
-
-
-def _platform_series(df, column, window_size, use_smoothing) -> pd.Series:
-    # Each platform is smoothed over its own dates only (as the legacy plot.py
-    # did). Substituted days leave the other platform empty on that row, and a
-    # window over the merged rows would invent values there.
-    series = df[["date", column]].dropna().set_index("date")[column]
-    if use_smoothing:
-        series = series.rolling(window=window_size, center=True, min_periods=1).mean()
-    return series
+def apply_sliding_window(series: pd.Series, window_size: int = 3) -> pd.Series:
+    """Centered moving average over a date-sorted series (legacy plot.py)."""
+    return series.rolling(window=window_size, center=True, min_periods=1).mean()
 
 
 def plot_metric(
@@ -64,8 +54,15 @@ def plot_metric(
     weibo_col = f"weibo_{metric_name}"
     twitter_col = f"twitter_{metric_name}"
 
-    weibo_values = _platform_series(df, weibo_col, window_size, use_smoothing)
-    twitter_values = _platform_series(df, twitter_col, window_size, use_smoothing)
+    # Each platform keeps only its own dates: substituted days leave the other
+    # platform empty on that row, and a window over merged rows would invent values.
+    weibo_values = df[["date", weibo_col]].dropna().set_index("date")[weibo_col]
+    twitter_values = df[["date", twitter_col]].dropna().set_index("date")[twitter_col]
+
+    # Sliding window happens here, at draw time only; figure_data stays unsmoothed.
+    if use_smoothing:
+        weibo_values = apply_sliding_window(weibo_values, window_size)
+        twitter_values = apply_sliding_window(twitter_values, window_size)
 
     ax.plot(weibo_values.index, weibo_values.values, color=WEIBO_COLOR, linewidth=5, alpha=0.7, label="Weibo, China")
     ax.plot(twitter_values.index, twitter_values.values, color=TWITTER_COLOR, linewidth=5, alpha=0.7, label="Twitter, USA")
