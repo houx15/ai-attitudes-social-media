@@ -48,6 +48,13 @@ def normalize_opinion(value: Any) -> Optional[Union[int, str]]:
     return None
 
 
+def _cached_tokens(usage) -> int:
+    # OpenAI-compatible APIs nest it under prompt_tokens_details; some put it top-level.
+    details = getattr(usage, "prompt_tokens_details", None)
+    cached = getattr(details, "cached_tokens", None) or getattr(usage, "cached_tokens", None)
+    return int(cached or 0)
+
+
 class OpenRouterClient:
     def __init__(
         self,
@@ -89,7 +96,7 @@ class OpenRouterClient:
                 token_stats = {
                     "prompt_tokens": usage.prompt_tokens if usage else 0,
                     "completion_tokens": usage.completion_tokens if usage else 0,
-                    "cached_tokens": getattr(usage, "cached_tokens", 0) if usage else 0,
+                    "cached_tokens": _cached_tokens(usage),
                 }
 
                 opinion = None
@@ -132,6 +139,25 @@ def load_processed_ids(results_path: str) -> set:
     return set(ids[ids != ""].unique())
 
 
+TOKEN_COLUMNS = ["prompt_tokens", "cached_tokens", "completion_tokens"]
+
+
+def format_tokens(n: int) -> str:
+    if n < 1_000:
+        return str(n)
+    if n < 1_000_000:
+        return f"{n / 1_000:.1f}k"
+    return f"{n / 1_000_000:.2f}M"
+
+
+def _print_token_summary(desc: str, label: str, totals: Dict[str, int]) -> None:
+    print(
+        f"{desc} tokens {label}: {totals['prompt_tokens']:,} prompt "
+        f"({totals['cached_tokens']:,} cached) + {totals['completion_tokens']:,} output",
+        flush=True,
+    )
+
+
 def analyze_many(
     client, df: pd.DataFrame, results_path: str, max_workers: int = 8, desc: str = "Analyzing"
 ) -> Dict:
@@ -154,6 +180,7 @@ def analyze_many(
         f"{len(todo)} to analyze",
         flush=True,
     )
+    run_tokens = {column: 0 for column in TOKEN_COLUMNS}
     if len(todo) == 0:
         return summary
 
@@ -208,7 +235,21 @@ def analyze_many(
                     summary["failed"] += 1
                 else:
                     summary["completed"] += 1
+                for column in TOKEN_COLUMNS:
+                    run_tokens[column] += int(result.get(column) or 0)
                 bar.update(1)
-                bar.set_postfix(completed=summary["completed"], failed=summary["failed"], refresh=False)
+                bar.set_postfix(
+                    {
+                        "completed": summary["completed"],
+                        "failed": summary["failed"],
+                        "in": format_tokens(run_tokens["prompt_tokens"]),
+                        "out": format_tokens(run_tokens["completion_tokens"]),
+                    },
+                    refresh=False,
+                )
+
+    _print_token_summary(desc, "this run", run_tokens)
+    all_runs = pd.read_csv(path, usecols=TOKEN_COLUMNS).fillna(0).astype(int).sum()
+    _print_token_summary(desc, "all runs", {column: int(all_runs[column]) for column in TOKEN_COLUMNS})
 
     return summary

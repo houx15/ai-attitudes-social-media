@@ -421,3 +421,40 @@ def test_analyze_many_shows_progress_and_resume_counts(tmp_path, capsys):
     captured = capsys.readouterr()
     assert "3 posts: 1 already done, 2 to analyze" in captured.out
     assert "weibo" in captured.err and "2/2" in captured.err
+
+
+def test_analyze_many_reports_token_usage_live_and_at_the_end(tmp_path, capsys):
+    results_path = tmp_path / "results.csv"
+    results_path.write_text("id,opinion,prompt_tokens,completion_tokens,cached_tokens\na,1,400,6,100\n")
+    df = pd.DataFrame({"id": ["a", "b", "c"], "text": ["ta", "tb", "tc"]})
+
+    analyze_many(CountingFakeClient(), df, str(results_path), max_workers=2, desc="weibo")
+
+    captured = capsys.readouterr()
+    # CountingFakeClient reports 1 prompt + 1 completion token per call
+    assert "weibo tokens this run: 2 prompt (0 cached) + 2 output" in captured.out
+    assert "weibo tokens all runs: 402 prompt (100 cached) + 8 output" in captured.out
+    assert "in=2" in captured.err and "out=2" in captured.err
+
+
+def test_format_tokens_is_compact():
+    from openrouter_client import format_tokens
+
+    assert format_tokens(950) == "950"
+    assert format_tokens(45_678) == "45.7k"
+    assert format_tokens(1_234_567) == "1.23M"
+
+
+def test_analyze_one_reads_cached_tokens_from_prompt_tokens_details():
+    # OpenAI-compatible APIs (incl. OpenRouter) nest it: usage.prompt_tokens_details.cached_tokens
+    usage = SimpleNamespace(
+        prompt_tokens=400,
+        completion_tokens=6,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=384),
+    )
+    fake = FakeOpenAI(responses=[_fake_response('{"opinion": 1}', usage=usage)])
+    client = OpenRouterClient(
+        api_key="k", base_url="https://openrouter.ai/api/v1", model="m", client=fake
+    )
+
+    assert client.analyze_one("some text")["cached_tokens"] == 384

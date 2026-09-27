@@ -275,7 +275,7 @@ class FakeOpenRouter:
                             "prompt_tokens": 400,
                             "completion_tokens": 6,
                             "total_tokens": 406,
-                            "prompt_tokens_details": {"cached_tokens": 0},
+                            "prompt_tokens_details": {"cached_tokens": 384},
                         },
                     },
                 )
@@ -440,6 +440,10 @@ def main():
             ),
         )
         check(
+            "token usage (incl. cached tokens nested in prompt_tokens_details) is recorded",
+            all((first[p]["cached_tokens"].astype(int) > 0).any() for p in ("weibo", "twitter")),
+        )
+        check(
             "resume sent only the non-JSON posts again",
             all(r["text"].startswith(BADJSON) for r in fake.requests[requests_after_first:]),
             f"{len(fake.requests) - requests_after_first} requests on the second pass",
@@ -513,8 +517,6 @@ def main():
             )
             check(f"[{platform}] the live model returned usable labels", len(valid) > 0,
                   "check OPENROUTER_MODEL slug and key" if len(valid) == 0 else "")
-        print("A cached_tokens total of 0 may mean the SDK nests it where the client does not look;"
-              " it only affects cost reporting.")
 
     print("\n=== Smoke test results ===")
     for name, ok, detail in checks:
