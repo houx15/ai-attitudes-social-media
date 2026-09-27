@@ -36,6 +36,8 @@ TARGET_DATES = ["2024-03-01", "2024-03-10", "2024-03-20", "2024-04-01"]
 OFF_DAY = "2024-03-05"  # not a target day, so its file must never be read
 # Same layout as the real data: Weibo's first sampled day was crawled a day early.
 DATE_SUBSTITUTIONS = {"weibo": {"2024-03-01": "2024-02-29"}, "twitter": {}}
+# Twitter metrics are always restricted to these users; tu6 stands in for non-US authors.
+US_TWITTER_USERS = ["tu1", "tu2", "tu3", "tu4", "tu5"]
 POSTS_PER_DAY = 12
 CANNOT_TELL = "cannot tell"
 FLAKY = "[flaky] "  # fake server answers 500 the first time it sees this post
@@ -318,6 +320,7 @@ def write_smoke_config(live, base_url=None):
         f"TWITTER_INPUT_DIR = {str(DATA_DIR / 'twitter')!r}\n"
         "TWITTER_FILENAME_PATTERN = 'tweets_{date}.parquet'\n"
         f"OUTPUT_DIR = {str(OUTPUT_DIR)!r}\n"
+        f"TWITTER_US_USERIDS_PATH = {str(DATA_DIR / 'us_userids.json')!r}\n"
         "MAX_WORKERS = 4\n"
         "MAX_RETRIES = 3\n"
         "REQUEST_TIMEOUT = 60\n"
@@ -343,6 +346,8 @@ def read_results(platform):
 
 def expected_daily_metrics(truth, platform):
     posts = truth[(truth["platform"] == platform) & truth["sent"]]
+    if platform == "twitter":
+        posts = posts[posts["user"].isin(US_TWITTER_USERS)]
     posts = posts.dropna(subset=["expected_opinion"]).assign(
         weight=lambda d: d["likes"] + 1,
         weighted=lambda d: d["expected_opinion"] * (d["likes"] + 1),
@@ -377,6 +382,7 @@ def main():
     shutil.rmtree(SMOKE_DIR, ignore_errors=True)
     SMOKE_DIR.mkdir()
     truth = generate_mock_data(fault_injection=not live)
+    (DATA_DIR / "us_userids.json").write_text(json.dumps(US_TWITTER_USERS))
     fake = None if live else FakeOpenRouter()
     write_smoke_config(live, base_url=None if live else fake.base_url)
 
@@ -467,7 +473,7 @@ def main():
                     mismatches.append(f"{platform}_{metric}")
         check(
             "all 6 daily series in figure_data match independently computed ground truth "
-            "(so export is unsmoothed and the math is right)",
+            "(so export is unsmoothed, the math is right, and Twitter keeps only US users)",
             not mismatches,
             ", ".join(mismatches),
         )

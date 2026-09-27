@@ -3,7 +3,6 @@
 Usage:
     python prepare_data.py clean --platform weibo
     python prepare_data.py clean --platform twitter
-    python prepare_data.py clean --platform twitter --location us   # keep only US users' tweets
     python prepare_data.py clean --platform weibo --start_date 2024-03-01 --end_date 2024-03-31 --target_days 1,10,20
     python prepare_data.py export
 """
@@ -108,18 +107,12 @@ def _clean_cli(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     target_days: Optional[Union[str, int, Sequence[int]]] = None,
-    location: Optional[str] = None,
 ):
     import config
 
-    # Same as the legacy `batch_sentiment_analysis.py calculate --location us`:
-    # an opt-in filter to US users' tweets, applied at aggregation time.
-    if location is None:
-        user_id_filter_path = None
-    elif location == "us" and platform == "twitter":
-        user_id_filter_path = config.TWITTER_US_USERIDS_PATH
-    else:
-        raise ValueError(f"--location {location!r} is not supported for {platform}; only twitter + us")
+    # Twitter is always restricted to US users, applied at aggregation time as
+    # in the legacy `batch_sentiment_analysis.py calculate --location us`.
+    user_id_filter_path = config.TWITTER_US_USERIDS_PATH if platform == "twitter" else None
 
     input_dir = config.WEIBO_INPUT_DIR if platform == "weibo" else config.TWITTER_INPUT_DIR
     filename_pattern = (

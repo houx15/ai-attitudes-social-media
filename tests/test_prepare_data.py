@@ -251,6 +251,7 @@ def _install_fake_config(monkeypatch, tmp_path):
     fake_config.MAX_WORKERS = 8
     fake_config.MAX_RETRIES = 3
     fake_config.REQUEST_TIMEOUT = 45
+    fake_config.TWITTER_US_USERIDS_PATH = str(tmp_path / "us_userids.json")
     monkeypatch.setitem(sys.modules, "config", fake_config)
     return fake_config
 
@@ -424,33 +425,37 @@ def test_clean_without_a_user_id_filter_keeps_everyone(tmp_path):
     assert result.iloc[0]["avg_opinion"] == pytest.approx(0.0)
 
 
-def test_clean_cli_location_us_uses_configured_us_userids(tmp_path, monkeypatch):
+def test_clean_cli_always_applies_us_filter_to_twitter_only(tmp_path, monkeypatch):
     import fire
 
     import prepare_data
 
-    fake_config = _install_fake_config(monkeypatch, tmp_path)
-    fake_config.TWITTER_US_USERIDS_PATH = str(tmp_path / "us_userids.json")
+    _install_fake_config(monkeypatch, tmp_path)
     captured = []
     monkeypatch.setattr(prepare_data, "clean", lambda **kw: captured.append(kw))
 
-    fire.Fire({"clean": prepare_data._clean_cli}, command=["clean", "--platform", "twitter", "--location", "us"])
     fire.Fire({"clean": prepare_data._clean_cli}, command=["clean", "--platform", "twitter"])
+    fire.Fire({"clean": prepare_data._clean_cli}, command=["clean", "--platform", "weibo"])
 
     assert captured[0]["user_id_filter_path"] == str(tmp_path / "us_userids.json")
     assert captured[1]["user_id_filter_path"] is None
 
 
-@pytest.mark.parametrize("platform, location", [("weibo", "us"), ("twitter", "uk")])
-def test_clean_cli_rejects_unsupported_location(tmp_path, monkeypatch, platform, location):
-    import prepare_data
+def test_clean_fails_loudly_when_us_userids_file_is_missing(tmp_path):
+    results_path = _write_twitter_day(tmp_path)
 
-    fake_config = _install_fake_config(monkeypatch, tmp_path)
-    fake_config.TWITTER_US_USERIDS_PATH = str(tmp_path / "us_userids.json")
-    monkeypatch.setattr(prepare_data, "clean", lambda **kw: None)
-
-    with pytest.raises(ValueError):
-        prepare_data._clean_cli(platform, location=location)
+    with pytest.raises(FileNotFoundError):
+        clean(
+            platform="twitter",
+            input_dir=str(tmp_path),
+            filename_pattern="tweets_{date}.parquet",
+            start_date="2024-03-01",
+            end_date="2024-03-05",
+            target_days=[1, 10, 20],
+            opinion_results_path=str(results_path),
+            output_path=str(tmp_path / "twitter_daily_opinion.parquet"),
+            user_id_filter_path=str(tmp_path / "missing.json"),
+        )
 
 
 def test_missing_like_counts_are_weighted_per_platform_like_legacy(tmp_path):

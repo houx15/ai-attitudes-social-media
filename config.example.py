@@ -28,8 +28,8 @@ WEIBO_FILENAME_PATTERN = "{date}.parquet"
 # twitterapi-io's crawler + convert_to_parquet.py. This pipeline only reads them.
 TWITTER_INPUT_DIR = "YOUR_PATH_HERE"  # e.g. /path/to/twitterapi-io/parquet_data
 TWITTER_FILENAME_PATTERN = "tweets_{date}.parquet"
-# us_userids.json from twitterapi-io/user_location_filter.py; used only by
-# `prepare_data.py clean --platform twitter --location us`.
+# us_userids.json from twitterapi-io/user_location_filter.py. Required:
+# `prepare_data.py clean --platform twitter` always keeps only these US users.
 TWITTER_US_USERIDS_PATH = "YOUR_PATH_HERE"  # e.g. /path/to/user_location_filter/us_userids.json
 
 # Output roots

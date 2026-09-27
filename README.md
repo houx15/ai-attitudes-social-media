@@ -46,7 +46,6 @@ python run_analysis.py twitter
 # Stage 2: clean + compute daily aggregates (raw mean / like-weighted / user-mean) + export figure data
 python prepare_data.py clean --platform weibo
 python prepare_data.py clean --platform twitter
-python prepare_data.py clean --platform twitter --location us   # optional: only US users (TWITTER_US_USERIDS_PATH), as the old --location us
 python prepare_data.py export
 
 # Stage 3: plot (sliding-window smoothing happens here only, figure_data itself stays unsmoothed)
@@ -60,6 +59,10 @@ Stages 1 and 2 both accept `--start_date`, `--end_date` and `--target_days` over
 values to Stage 2 so both stages cover the same sample. `clean` prints a coverage line
 (metadata rows loaded / matched an opinion result / valid numeric opinion) so a
 mismatched or partial run is visible.
+
+Twitter is always restricted to US users: `clean --platform twitter` keeps only authors
+listed in `TWITTER_US_USERIDS_PATH` (the old `--location us`). Stage 1 still analyzes all
+tweets, as before.
 
 Sampled days are the 1st/10th/20th of each month. Where a platform's data is missing on
 a nominal day, `DATE_SUBSTITUTIONS` in `config.py` names the nearby day that was crawled
