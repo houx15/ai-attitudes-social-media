@@ -14,9 +14,14 @@ from typing import Dict, List, Optional, Sequence, Union
 import fire
 import pandas as pd
 
-from loaders import parse_target_days, twitter_loader, weibo_loader
+from loaders import day_files, iter_platform_days, parse_target_days
 
-LOADERS = {"weibo": weibo_loader, "twitter": twitter_loader}
+
+def _load_opinions(opinion_results_path: str) -> pd.DataFrame:
+    opinions = pd.read_csv(opinion_results_path, usecols=["id", "opinion"], dtype={"id": str})
+    # A retried id is appended again to the results CSV; the latest write wins
+    # so each post counts exactly once.
+    return opinions.drop_duplicates(subset=["id"], keep="last")
 
 
 def clean(
@@ -31,69 +36,85 @@ def clean(
     date_substitutions: Optional[Dict[str, str]] = None,
     user_id_filter_path: Optional[str] = None,
 ) -> pd.DataFrame:
-    if platform not in LOADERS:
-        raise ValueError(f"Unknown platform: {platform!r}, expected one of {list(LOADERS)}")
+    """Daily avg / weighted / user-level opinion, reading one day file at a time.
 
-    loader = LOADERS[platform]
-    meta_df = loader(input_dir, filename_pattern, start_date, end_date, target_days, date_substitutions)
-
-    opinions_df = pd.read_csv(opinion_results_path, dtype={"id": str})
-    # A retried id is appended again to the results CSV; the latest write wins
-    # so each post counts exactly once.
-    opinions_df = opinions_df.drop_duplicates(subset=["id"], keep="last")
-    merged = meta_df.merge(opinions_df, on="id", how="inner")
-    n_matched = len(merged)
-
+    Each file contributes sums and counts (per date, and per date and user); the
+    three metrics are computed from their totals, which is identical to computing
+    them over all posts at once.
+    """
+    files = day_files(
+        platform, input_dir, filename_pattern, start_date, end_date, target_days, date_substitutions
+    )
+    opinions = _load_opinions(opinion_results_path)
+    kept_user_ids = None
     if user_id_filter_path is not None:
         with open(user_id_filter_path, "r") as f:
             kept_user_ids = json.load(f)
-        merged = merged[merged["user_id"].isin(kept_user_ids)]
-        print(
-            f"User filter {user_id_filter_path}: kept {len(merged)} of {n_matched} posts "
-            f"from {merged['user_id'].nunique()} users"
+
+    counts = {"loaded": 0, "matched": 0, "user_filtered": 0, "valid": 0}
+    kept_users = set()
+    date_parts, user_parts = [], []
+    for frame in iter_platform_days(platform, files, with_text=False):
+        counts["loaded"] += len(frame)
+        merged = frame.merge(opinions, on="id", how="inner")
+        counts["matched"] += len(merged)
+
+        if kept_user_ids is not None:
+            merged = merged[merged["user_id"].isin(kept_user_ids)]
+            counts["user_filtered"] += len(merged)
+            kept_users.update(merged["user_id"].dropna())
+
+        merged = merged.assign(opinion=pd.to_numeric(merged["opinion"], errors="coerce"))
+        merged = merged.dropna(subset=["opinion"])
+        counts["valid"] += len(merged)
+
+        weight_raw = pd.to_numeric(merged["weight_raw"], errors="coerce")
+        # Legacy behaviour differs per platform: Weibo filled a missing like count
+        # with 0; Twitter left it missing, which drops the post from the weighted
+        # mean only (pandas sums skip NaN in both numerator and denominator).
+        if platform == "weibo":
+            weight_raw = weight_raw.fillna(0)
+        merged = merged.assign(weight=weight_raw + 1)
+        merged = merged.assign(opinion_weight=merged["opinion"] * merged["weight"])
+
+        date_parts.append(
+            merged.groupby("date").agg(
+                opinion_sum=("opinion", "sum"),
+                opinion_count=("opinion", "size"),
+                opinion_weight_sum=("opinion_weight", "sum"),
+                weight_sum=("weight", "sum"),
+            )
+        )
+        # groupby drops posts with a missing user_id, as in the legacy code.
+        user_parts.append(
+            merged.groupby(["date", "user_id"])["opinion"].agg(["sum", "count"])
         )
 
-    merged["opinion"] = pd.to_numeric(merged["opinion"], errors="coerce")
-    merged = merged.dropna(subset=["opinion"])
+    if kept_user_ids is not None:
+        print(
+            f"User filter {user_id_filter_path}: kept {counts['user_filtered']} of "
+            f"{counts['matched']} posts from {len(kept_users)} users"
+        )
     print(
         f"Coverage for {platform} ({start_date}..{end_date}, days {list(target_days)}): "
-        f"{len(meta_df)} metadata rows loaded, "
-        f"{n_matched} matched an opinion result, "
-        f"{len(merged)} with a valid numeric opinion"
+        f"{counts['loaded']} metadata rows loaded, "
+        f"{counts['matched']} matched an opinion result, "
+        f"{counts['valid']} with a valid numeric opinion"
     )
-    weight_raw = pd.to_numeric(merged["weight_raw"], errors="coerce")
-    # Legacy behaviour differs per platform: Weibo filled a missing like count
-    # with 0; Twitter left it missing, which drops the post from the weighted
-    # mean only (pandas sums skip NaN in both numerator and denominator).
-    if platform == "weibo":
-        weight_raw = weight_raw.fillna(0)
-    merged["weight"] = weight_raw + 1
 
-    daily_avg = merged.groupby("date")["opinion"].mean().reset_index()
-    daily_avg.columns = ["date", "avg_opinion"]
-
-    merged["opinion_weight"] = merged["opinion"] * merged["weight"]
-    daily_weighted = (
-        merged.groupby("date")
-        .agg({"opinion_weight": "sum", "weight": "sum"})
-        .reset_index()
-    )
-    daily_weighted["weighted_opinion"] = (
-        daily_weighted["opinion_weight"] / daily_weighted["weight"]
-    )
-    daily_weighted = daily_weighted[["date", "weighted_opinion"]]
-
-    user_daily_avg = (
-        merged.groupby(["date", "user_id"])["opinion"].mean().reset_index()
-    )
-    user_daily_avg.columns = ["date", "user_id", "user_daily_avg_opinion"]
-    daily_user_avg = (
-        user_daily_avg.groupby("date")["user_daily_avg_opinion"].mean().reset_index()
-    )
-    daily_user_avg.columns = ["date", "user_avg_opinion"]
-
-    result = daily_avg.merge(daily_weighted, on="date", how="outer")
-    result = result.merge(daily_user_avg, on="date", how="outer")
+    if date_parts:
+        by_date = pd.concat(date_parts).groupby(level="date").sum()
+        by_user = pd.concat(user_parts).groupby(level=["date", "user_id"]).sum()
+        user_means = (by_user["sum"] / by_user["count"]).groupby(level="date").mean()
+        result = pd.DataFrame(
+            {
+                "avg_opinion": by_date["opinion_sum"] / by_date["opinion_count"],
+                "weighted_opinion": by_date["opinion_weight_sum"] / by_date["weight_sum"],
+                "user_avg_opinion": user_means,
+            }
+        ).rename_axis("date").reset_index()
+    else:
+        result = pd.DataFrame(columns=["date", "avg_opinion", "weighted_opinion", "user_avg_opinion"])
     result = result.sort_values("date").reset_index(drop=True)
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)

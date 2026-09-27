@@ -83,6 +83,8 @@ share the legacy names and would overwrite the published results.
 ### Stage 1 (`run_analysis.py`)
 
 - Needs network access to `openrouter.ai`; stages 2–3 run offline.
+- Reads one day file at a time and keeps at most `MAX_WORKERS × 4` requests queued, so
+  memory stays flat for millions of posts (Ctrl-C stops promptly; rerun to resume).
 - Resumable: rerunning skips posts that already have a valid label and retries failed
   ones. Results append to `OUTPUT_DIR/analysis_results/{platform}_opinion_results.csv`.
 - Shows a progress bar (done/total, speed, ETA, completed/failed, tokens in/out) and
@@ -91,8 +93,9 @@ share the legacy names and would overwrite the published results.
 
 ### Stage 2 (`prepare_data.py clean`)
 
-- Re-reads post metadata (user id, like counts, dates) from the platform's raw input
-  directory, so run it on the same server as Stage 1.
+- Re-reads post metadata (user id, like counts, dates, never the text) from the
+  platform's raw input directory one day at a time, so run it on the same server as
+  Stage 1.
 - Computes three daily metrics: raw mean (`avg_opinion`), like-weighted mean
   (`weighted_opinion`, weight = likes + 1), and user-level mean (`user_avg_opinion`,
   mean of each user's daily mean, the main result).

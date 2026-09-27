@@ -419,8 +419,9 @@ def test_analyze_many_shows_progress_and_resume_counts(tmp_path, capsys):
     analyze_many(CountingFakeClient(), df, str(results_path), max_workers=2, desc="weibo")
 
     captured = capsys.readouterr()
-    assert "3 posts: 1 already done, 2 to analyze" in captured.out
-    assert "weibo" in captured.err and "2/2" in captured.err
+    assert "1 posts already labelled" in captured.out
+    # the bar covers every input row, including the one already labelled
+    assert "weibo" in captured.err and "3/3" in captured.err
 
 
 def test_analyze_many_reports_token_usage_live_and_at_the_end(tmp_path, capsys):
@@ -458,3 +459,22 @@ def test_analyze_one_reads_cached_tokens_from_prompt_tokens_details():
     )
 
     assert client.analyze_one("some text")["cached_tokens"] == 384
+
+
+def test_analyze_stream_reads_the_next_day_only_when_the_current_one_is_nearly_done(tmp_path):
+    from openrouter_client import analyze_stream
+
+    client = CountingFakeClient()
+    processed_when_day2_requested = []
+
+    def frames():
+        yield pd.DataFrame({"id": [f"d1_{i}" for i in range(100)], "text": [f"a{i}" for i in range(100)]})
+        processed_when_day2_requested.append(len(client.calls))
+        yield pd.DataFrame({"id": ["d2_0", "d2_1"], "text": ["b0", "b1"]})
+
+    summary = analyze_stream(client, frames(), str(tmp_path / "results.csv"), max_workers=2, desc="weibo")
+
+    # At most max_workers * 4 = 8 posts are in flight, so day 1 is >= 92 done
+    # before day 2 is even read.
+    assert processed_when_day2_requested[0] >= 92
+    assert summary == {"total": 102, "skipped": 0, "completed": 102, "failed": 0}

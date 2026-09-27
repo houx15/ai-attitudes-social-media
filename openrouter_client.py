@@ -7,9 +7,9 @@ import logging
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Iterable, Optional, Union
 
 import pandas as pd
 from tqdm import tqdm
@@ -161,29 +161,32 @@ def _print_token_summary(desc: str, label: str, totals: Dict[str, int]) -> None:
 def analyze_many(
     client, df: pd.DataFrame, results_path: str, max_workers: int = 8, desc: str = "Analyzing"
 ) -> Dict:
+    """Analyze the posts in one frame (see analyze_stream)."""
+    return analyze_stream(client, [df], results_path, max_workers=max_workers, desc=desc, total_rows=len(df))
+
+
+def analyze_stream(
+    client,
+    frames: Iterable[pd.DataFrame],
+    results_path: str,
+    max_workers: int = 8,
+    desc: str = "Analyzing",
+    total_rows: Optional[int] = None,
+) -> Dict:
+    """Label posts frame by frame (one day at a time), appending to the results CSV.
+
+    Only max_workers * 4 requests are ever queued, so memory stays flat however
+    many posts there are, and the next frame is read only when needed. Posts
+    whose id already has a valid label in the results CSV are skipped.
+    """
     path = Path(results_path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     processed_ids = load_processed_ids(results_path)
-    df = df.copy()
-    df["id"] = df["id"].astype(str)
-    todo = df[~df["id"].isin(processed_ids)]
+    print(f"{desc}: {len(processed_ids):,} posts already labelled in {path.name}", flush=True)
 
-    summary = {
-        "total": len(df),
-        "skipped": len(df) - len(todo),
-        "completed": 0,
-        "failed": 0,
-    }
-    print(
-        f"{desc}: {summary['total']} posts: {summary['skipped']} already done, "
-        f"{len(todo)} to analyze",
-        flush=True,
-    )
+    summary = {"total": 0, "skipped": 0, "completed": 0, "failed": 0}
     run_tokens = {column: 0 for column in TOKEN_COLUMNS}
-    if len(todo) == 0:
-        return summary
-
     write_lock = threading.Lock()
     write_header = not path.exists() or path.stat().st_size == 0
 
@@ -217,39 +220,64 @@ def analyze_many(
                 )
         return result
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [
-            executor.submit(process_row, row["id"], row["text"])
-            for _, row in todo.iterrows()
-        ]
-        # Refresh every 30s when output goes to a log file, so it isn't flooded.
-        with tqdm(
-            total=len(futures),
-            desc=desc,
-            unit="post",
-            mininterval=0.5 if sys.stderr.isatty() else 30,
-        ) as bar:
-            for future in as_completed(futures):
-                result = future.result()
-                if result["opinion"] is None:
-                    summary["failed"] += 1
-                else:
-                    summary["completed"] += 1
-                for column in TOKEN_COLUMNS:
-                    run_tokens[column] += int(result.get(column) or 0)
-                bar.update(1)
-                bar.set_postfix(
-                    {
-                        "completed": summary["completed"],
-                        "failed": summary["failed"],
-                        "in": format_tokens(run_tokens["prompt_tokens"]),
-                        "out": format_tokens(run_tokens["completion_tokens"]),
-                    },
-                    refresh=False,
-                )
+    def record(future, bar):
+        result = future.result()
+        if result["opinion"] is None:
+            summary["failed"] += 1
+        else:
+            summary["completed"] += 1
+        for column in TOKEN_COLUMNS:
+            run_tokens[column] += int(result.get(column) or 0)
+        bar.update(1)
+        bar.set_postfix(
+            {
+                "completed": summary["completed"],
+                "failed": summary["failed"],
+                "in": format_tokens(run_tokens["prompt_tokens"]),
+                "out": format_tokens(run_tokens["completion_tokens"]),
+            },
+            refresh=False,
+        )
+
+    max_in_flight = max_workers * 4
+    in_flight = set()
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    # Refresh every 30s when output goes to a log file, so it isn't flooded.
+    bar = tqdm(
+        total=total_rows,
+        desc=desc,
+        unit="post",
+        mininterval=0.5 if sys.stderr.isatty() else 30,
+    )
+    try:
+        for frame in frames:
+            ids = frame["id"].astype(str)
+            todo = ~ids.isin(processed_ids)
+            n_todo = int(todo.sum())
+            summary["total"] += len(frame)
+            summary["skipped"] += len(frame) - n_todo
+            # Rows dropped while reading (duplicates, empty text) and rows already
+            # labelled count toward the bar right away.
+            bar.update(frame.attrs.get("raw_rows", len(frame)) - n_todo)
+            for row_id, text in zip(ids[todo], frame.loc[todo, "text"]):
+                while len(in_flight) >= max_in_flight:
+                    done, in_flight = wait(in_flight, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        record(future, bar)
+                in_flight.add(executor.submit(process_row, row_id, text))
+        done, in_flight = wait(in_flight)
+        for future in done:
+            record(future, bar)
+    except KeyboardInterrupt:
+        executor.shutdown(wait=False, cancel_futures=True)
+        bar.close()
+        print(f"\n{desc}: interrupted; rerun the same command to resume.", flush=True)
+        raise
+    executor.shutdown()
+    bar.close()
 
     _print_token_summary(desc, "this run", run_tokens)
-    all_runs = pd.read_csv(path, usecols=TOKEN_COLUMNS).fillna(0).astype(int).sum()
-    _print_token_summary(desc, "all runs", {column: int(all_runs[column]) for column in TOKEN_COLUMNS})
-
+    if path.exists():
+        all_runs = pd.read_csv(path, usecols=TOKEN_COLUMNS).fillna(0).astype(int).sum()
+        _print_token_summary(desc, "all runs", {column: int(all_runs[column]) for column in TOKEN_COLUMNS})
     return summary

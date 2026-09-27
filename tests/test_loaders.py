@@ -276,3 +276,48 @@ def test_loader_reports_target_dates_with_no_input_file(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "2024-03-10" in out and "2024-03-20" in out
     assert "2024-03-01" not in out
+
+
+def _write_weibo_day(tmp_path, date, ids):
+    pd.DataFrame({
+        "weibo_id": ids, "user_id": [1] * len(ids),
+        "weibo_content": [f"post {i}" for i in ids], "zan": [0] * len(ids),
+    }).to_parquet(tmp_path / f"{date}.parquet", index=False)
+
+
+def test_iter_platform_days_yields_one_day_at_a_time_and_dedups_across_days(tmp_path):
+    from loaders import day_files, iter_platform_days
+
+    _write_weibo_day(tmp_path, "2024-03-01", ["w1", "w2", "w2"])
+    _write_weibo_day(tmp_path, "2024-03-10", ["w2", "w3"])
+    files = day_files("weibo", str(tmp_path), "{date}.parquet", "2024-03-01", "2024-03-10", [1, 10, 20])
+
+    frames = list(iter_platform_days("weibo", files))
+
+    assert [list(f["id"]) for f in frames] == [["w1", "w2"], ["w3"]]
+    assert [f.attrs["raw_rows"] for f in frames] == [3, 2]
+
+
+def test_iter_platform_days_can_skip_the_text_column(tmp_path):
+    from loaders import day_files, iter_platform_days
+
+    # No weibo_content column at all: reading it would fail.
+    pd.DataFrame({"weibo_id": ["w1"], "user_id": [1], "zan": [0]}).to_parquet(
+        tmp_path / "2024-03-01.parquet", index=False
+    )
+    files = day_files("weibo", str(tmp_path), "{date}.parquet", "2024-03-01", "2024-03-05", [1, 10, 20])
+
+    (frame,) = iter_platform_days("weibo", files, with_text=False)
+
+    assert "text" not in frame.columns
+    assert list(frame["id"]) == ["w1"]
+
+
+def test_count_input_rows_reads_only_file_metadata(tmp_path):
+    from loaders import count_input_rows, day_files
+
+    _write_weibo_day(tmp_path, "2024-03-01", ["w1", "w2", "w2"])
+    _write_weibo_day(tmp_path, "2024-03-10", ["w3"])
+    files = day_files("weibo", str(tmp_path), "{date}.parquet", "2024-03-01", "2024-03-10", [1, 10, 20])
+
+    assert count_input_rows(files) == 4

@@ -494,3 +494,28 @@ def test_missing_like_counts_are_weighted_per_platform_like_legacy(tmp_path):
     assert weibo["weighted_opinion"] == pytest.approx(1.0)
     assert twitter["avg_opinion"] == pytest.approx(1.0)
     assert twitter["weighted_opinion"] == pytest.approx(0.0)
+
+
+def test_clean_never_reads_the_text_column(tmp_path):
+    # No weibo_content column at all: Stage 2 must not need post text.
+    pd.DataFrame({"weibo_id": ["w1", "w2"], "user_id": [1, 2], "zan": [0, 0]}).to_parquet(
+        tmp_path / "2024-03-01.parquet", index=False
+    )
+    results_path = tmp_path / "weibo_opinion_results.csv"
+    pd.DataFrame({
+        "id": ["w1", "w2"], "opinion": [2, 0],
+        "prompt_tokens": [1, 1], "completion_tokens": [1, 1], "cached_tokens": [0, 0],
+    }).to_csv(results_path, index=False)
+
+    result = clean(
+        platform="weibo",
+        input_dir=str(tmp_path),
+        filename_pattern="{date}.parquet",
+        start_date="2024-03-01",
+        end_date="2024-03-05",
+        target_days=[1, 10, 20],
+        opinion_results_path=str(results_path),
+        output_path=str(tmp_path / "weibo_daily_opinion.parquet"),
+    )
+
+    assert result["avg_opinion"].tolist() == pytest.approx([1.0])

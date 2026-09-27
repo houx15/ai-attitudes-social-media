@@ -11,10 +11,8 @@ from typing import Dict, List, Optional, Sequence, Union
 
 import fire
 
-from loaders import parse_target_days, twitter_loader, weibo_loader
-from openrouter_client import OpenRouterClient, analyze_many
-
-LOADERS = {"weibo": weibo_loader, "twitter": twitter_loader}
+from loaders import count_input_rows, day_files, iter_platform_days, parse_target_days
+from openrouter_client import OpenRouterClient, analyze_stream
 
 
 def analyze(
@@ -35,14 +33,11 @@ def analyze(
     backoff_base_seconds: float = 0.01,
     date_substitutions: Optional[Dict[str, str]] = None,
 ) -> dict:
-    if platform not in LOADERS:
-        raise ValueError(f"Unknown platform: {platform!r}, expected one of {list(LOADERS)}")
-
-    loader = LOADERS[platform]
-    df = loader(input_dir, filename_pattern, start_date, end_date, target_days, date_substitutions)
-
-    if len(df) == 0:
-        print(f"No input rows found for platform={platform} in range {start_date}..{end_date}")
+    files = day_files(
+        platform, input_dir, filename_pattern, start_date, end_date, target_days, date_substitutions
+    )
+    if not files:
+        print(f"No input files found for platform={platform} in range {start_date}..{end_date}")
         return {"total": 0, "skipped": 0, "completed": 0, "failed": 0}
 
     if client is None:
@@ -55,7 +50,14 @@ def analyze(
             backoff_base_seconds=backoff_base_seconds,
         )
 
-    summary = analyze_many(client, df, output_path, max_workers=workers, desc=platform)
+    summary = analyze_stream(
+        client,
+        iter_platform_days(platform, files),
+        output_path,
+        max_workers=workers,
+        desc=platform,
+        total_rows=count_input_rows(files),
+    )
     print(f"Stage 1 analysis summary for {platform}: {summary}")
     return summary
 
