@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
-from openrouter_client import OpenRouterClient
+from openrouter_client import OpenRouterClient, read_results
+from results_helpers import seed_results
 
 
 class FakeUsage:
@@ -124,22 +125,22 @@ class CountingFakeClient:
         }
 
 
-def test_analyze_many_writes_results_csv(tmp_path):
+def test_analyze_many_writes_results(tmp_path):
     df = pd.DataFrame({"id": ["a", "b"], "text": ["text a", "text b"]})
-    results_path = tmp_path / "results.csv"
+    results_path = tmp_path / "results"
     client = CountingFakeClient()
 
     summary = analyze_many(client, df, str(results_path), max_workers=2)
 
     assert summary == {"total": 2, "skipped": 0, "completed": 2, "failed": 0}
-    saved = pd.read_csv(results_path, dtype=str)
+    saved = read_results(str(results_path))
     assert set(saved["id"]) == {"a", "b"}
     assert set(saved["opinion"]) == {"1"}
 
 
 def test_analyze_many_skips_already_processed_ids(tmp_path):
-    results_path = tmp_path / "results.csv"
-    results_path.write_text("id,opinion,prompt_tokens,completion_tokens,cached_tokens,provider\na,1,1,1,0,DeepInfra\n")
+    results_path = tmp_path / "results"
+    seed_results(results_path, "id,opinion,prompt_tokens,completion_tokens,cached_tokens,provider\na,1,1,1,0,DeepInfra\n")
 
     df = pd.DataFrame({"id": ["a", "b"], "text": ["text a", "text b"]})
     client = CountingFakeClient()
@@ -149,19 +150,19 @@ def test_analyze_many_skips_already_processed_ids(tmp_path):
     assert summary["skipped"] == 1
     assert summary["completed"] == 1
     assert client.calls == ["text b"]
-    saved = pd.read_csv(results_path, dtype=str)
+    saved = read_results(str(results_path))
     assert len(saved) == 2
 
 
 def test_analyze_many_counts_failed_when_opinion_is_none(tmp_path):
     df = pd.DataFrame({"id": ["a"], "text": ["text a"]})
     client = CountingFakeClient(opinion_by_text={"text a": None})
-    results_path = tmp_path / "results.csv"
+    results_path = tmp_path / "results"
 
     summary = analyze_many(client, df, str(results_path), max_workers=1)
 
     assert summary == {"total": 1, "skipped": 0, "completed": 0, "failed": 1}
-    saved = pd.read_csv(results_path)
+    saved = read_results(str(results_path))
     assert saved["opinion"].isna().all()
 
 
@@ -191,7 +192,7 @@ def test_analyze_many_guards_against_exception_from_client(tmp_path):
     )
     # Client raises exception only for "text b"
     client = ExceptionRaisingClient(raise_on_text={"text b"})
-    results_path = tmp_path / "results.csv"
+    results_path = tmp_path / "results"
 
     summary = analyze_many(client, df, str(results_path), max_workers=2)
 
@@ -202,7 +203,7 @@ def test_analyze_many_guards_against_exception_from_client(tmp_path):
     assert summary["completed"] == 2
     assert summary["failed"] == 1
     # All 3 rows should be written to CSV: a with opinion 1, b with NaN, c with opinion 1
-    saved = pd.read_csv(results_path)
+    saved = read_results(str(results_path))
     assert len(saved) == 3
     assert set(saved["id"]) == {"a", "b", "c"}
     # Row b should have NaN opinion (from the exception)
@@ -219,8 +220,8 @@ from openrouter_client import load_processed_ids
 
 def test_analyze_many_retries_row_with_empty_opinion_on_resume(tmp_path):
     # (B) a row that failed on a previous run must be re-sent, not skipped
-    results_path = tmp_path / "results.csv"
-    results_path.write_text(
+    results_path = tmp_path / "results"
+    seed_results(results_path, 
         "id,opinion,prompt_tokens,completion_tokens,cached_tokens,provider\n"
         "a,,0,0,0,\n"
         "b,1,1,1,0,DeepInfra\n"
@@ -237,8 +238,8 @@ def test_analyze_many_retries_row_with_empty_opinion_on_resume(tmp_path):
 
 
 def test_load_processed_ids_only_counts_valid_opinions(tmp_path):
-    results_path = tmp_path / "results.csv"
-    results_path.write_text(
+    results_path = tmp_path / "results"
+    seed_results(results_path, 
         "id,opinion,prompt_tokens,completion_tokens,cached_tokens\n"
         "a,,0,0,0\n"
         "b,2,1,1,0\n"
@@ -317,7 +318,7 @@ def test_analyze_one_validates_opinion(content, expected):
     assert client.analyze_one("x")["opinion"] == expected
 
 
-def test_malformed_model_output_does_not_corrupt_results_csv(tmp_path):
+def test_malformed_model_output_does_not_corrupt_results(tmp_path):
     # (D) end-to-end: a real OpenRouterClient fed an array / out-of-range opinion
     # must not produce a broken CSV, and later reads must still work.
     from prepare_data import clean
@@ -353,13 +354,13 @@ def test_malformed_model_output_does_not_corrupt_results_csv(tmp_path):
         "zan": [0, 0, 0, 0],
     }).to_parquet(input_dir / "2024-03-01.parquet", index=False)
 
-    results_path = tmp_path / "results.csv"
+    results_path = tmp_path / "results"
     df = pd.DataFrame({"id": ["a", "b", "c", "d"], "text": ["post-a", "post-b", "post-c", "post-d"]})
     summary = analyze_many(client, df, str(results_path), max_workers=2)
     assert summary["completed"] == 1
     assert summary["failed"] == 3
 
-    saved = pd.read_csv(results_path, dtype=str)
+    saved = read_results(str(results_path))
     assert list(saved.columns) == ["id", "opinion", "prompt_tokens", "completion_tokens", "cached_tokens", "provider"]
     assert len(saved) == 4
     assert load_processed_ids(str(results_path)) == {"a"}
@@ -371,7 +372,7 @@ def test_malformed_model_output_does_not_corrupt_results_csv(tmp_path):
         start_date="2024-03-01",
         end_date="2024-03-05",
         target_days=[1, 10, 20],
-        opinion_results_path=str(results_path),
+        opinion_results_dir=str(results_path),
         output_path=str(tmp_path / "daily.parquet"),
     )
     assert result.iloc[0]["avg_opinion"] == pytest.approx(1.0)
@@ -382,11 +383,11 @@ def test_analyze_many_csv_write_is_quoted_even_for_unvalidated_values(tmp_path):
     # the file parseable (commas / quotes / newlines are quoted, not raw).
     df = pd.DataFrame({"id": ["a", "b"], "text": ["text a", "text b"]})
     client = CountingFakeClient(opinion_by_text={"text b": 'x,"y"\nz', "text a": [1, 2]})
-    results_path = tmp_path / "results.csv"
+    results_path = tmp_path / "results"
 
     analyze_many(client, df, str(results_path), max_workers=1)
 
-    saved = pd.read_csv(results_path, dtype=str)
+    saved = read_results(str(results_path))
     assert len(saved) == 2
     assert saved.set_index("id").loc["b", "opinion"] == 'x,"y"\nz'
     assert load_processed_ids(str(results_path)) == set()
@@ -416,8 +417,8 @@ def test_analyze_one_pins_provider_temperature_and_reasoning():
 
 
 def test_analyze_many_shows_progress_and_resume_counts(tmp_path, capsys):
-    results_path = tmp_path / "results.csv"
-    results_path.write_text("id,opinion,prompt_tokens,completion_tokens,cached_tokens,provider\na,1,1,1,0,DeepInfra\n")
+    results_path = tmp_path / "results"
+    seed_results(results_path, "id,opinion,prompt_tokens,completion_tokens,cached_tokens,provider\na,1,1,1,0,DeepInfra\n")
     df = pd.DataFrame({"id": ["a", "b", "c"], "text": ["ta", "tb", "tc"]})
 
     analyze_many(CountingFakeClient(), df, str(results_path), max_workers=2, desc="weibo")
@@ -429,8 +430,8 @@ def test_analyze_many_shows_progress_and_resume_counts(tmp_path, capsys):
 
 
 def test_analyze_many_reports_token_usage_live_and_at_the_end(tmp_path, capsys):
-    results_path = tmp_path / "results.csv"
-    results_path.write_text("id,opinion,prompt_tokens,completion_tokens,cached_tokens,provider\na,1,400,6,100,DeepInfra\n")
+    results_path = tmp_path / "results"
+    seed_results(results_path, "id,opinion,prompt_tokens,completion_tokens,cached_tokens,provider\na,1,400,6,100,DeepInfra\n")
     df = pd.DataFrame({"id": ["a", "b", "c"], "text": ["ta", "tb", "tc"]})
 
     analyze_many(CountingFakeClient(), df, str(results_path), max_workers=2, desc="weibo")
@@ -476,7 +477,7 @@ def test_analyze_stream_reads_the_next_day_only_when_the_current_one_is_nearly_d
         processed_when_day2_requested.append(len(client.calls))
         yield pd.DataFrame({"id": ["d2_0", "d2_1"], "text": ["b0", "b1"]})
 
-    summary = analyze_stream(client, frames(), str(tmp_path / "results.csv"), max_workers=2, desc="weibo")
+    summary = analyze_stream(client, frames(), str(tmp_path / "results"), max_workers=2, desc="weibo")
 
     # At most max_workers * 4 = 8 posts are in flight, so day 1 is >= 92 done
     # before day 2 is even read.
@@ -500,17 +501,32 @@ def test_analyze_many_writes_the_provider_column(tmp_path):
             return {"opinion": 1, "prompt_tokens": 1, "completion_tokens": 1, "cached_tokens": 0,
                     "provider": "DeepInfra"}
 
-    results_path = tmp_path / "results.csv"
+    results_path = tmp_path / "results"
     analyze_many(ProviderClient(), pd.DataFrame({"id": ["a"], "text": ["t"]}), str(results_path))
 
-    saved = pd.read_csv(results_path, dtype=str)
+    saved = read_results(str(results_path))
     assert list(saved.columns) == ["id", "opinion", "prompt_tokens", "completion_tokens", "cached_tokens", "provider"]
     assert saved["provider"].tolist() == ["DeepInfra"]
 
 
-def test_analyze_many_refuses_to_append_to_an_old_format_results_file(tmp_path):
-    results_path = tmp_path / "results.csv"
-    results_path.write_text("id,opinion,prompt_tokens,completion_tokens,cached_tokens\na,1,1,1,0\n")
+def test_each_flush_writes_a_new_part_and_never_overwrites_one(tmp_path):
+    from openrouter_client import results_parts
 
-    with pytest.raises(ValueError, match="provider"):
-        analyze_many(CountingFakeClient(), pd.DataFrame({"id": ["b"], "text": ["t"]}), str(results_path))
+    results_dir = tmp_path / "results"
+    df = pd.DataFrame({"id": [f"p{i}" for i in range(25)], "text": [f"t{i}" for i in range(25)]})
+
+    from openrouter_client import analyze_stream
+    analyze_stream(CountingFakeClient(), [df], str(results_dir), part_prefix="task2of4", max_workers=2, flush_rows=10)
+
+    names = [p.name for p in results_parts(str(results_dir))]
+    assert names == ["task2of4-part000001.parquet", "task2of4-part000002.parquet", "task2of4-part000003.parquet"]
+    assert sorted(read_results(str(results_dir))["id"]) == sorted(df["id"])  # all 25 kept
+
+
+def test_task_parts_do_not_match_a_longer_task_name(tmp_path):
+    from openrouter_client import results_parts
+
+    seed_results(tmp_path, "id,opinion\na,1\n", prefix="task1of1")
+    seed_results(tmp_path, "id,opinion\nb,1\n", prefix="task1of10")
+
+    assert [p.name for p in results_parts(str(tmp_path), "task1of1")] == ["task1of1-part000001.parquet"]

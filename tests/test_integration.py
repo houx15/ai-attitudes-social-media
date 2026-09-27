@@ -50,23 +50,23 @@ def test_full_pipeline_weibo_and_twitter_to_plots(tmp_path):
     output_dir = tmp_path / "output"
 
     # Stage 1
-    weibo_results_path = output_dir / "analysis_results" / "weibo_opinion_results.csv"
+    weibo_results_path = output_dir / "analysis_results" / "weibo_opinion_results"
     analyze(
         platform="weibo",
         input_dir=str(weibo_dir),
         filename_pattern="{date}.parquet",
-        output_path=str(weibo_results_path),
+        results_dir=str(weibo_results_path),
         api_key="k", base_url="https://openrouter.ai/api/v1", model="m",
         start_date="2024-03-01", end_date="2024-03-05", target_days=[1, 10, 20],
         client=ScriptedClient({"weibo positive": 2, "weibo negative": -2}),
     )
 
-    twitter_results_path = output_dir / "analysis_results" / "twitter_opinion_results.csv"
+    twitter_results_path = output_dir / "analysis_results" / "twitter_opinion_results"
     analyze(
         platform="twitter",
         input_dir=str(twitter_dir),
         filename_pattern="tweets_{date}.parquet",
-        output_path=str(twitter_results_path),
+        results_dir=str(twitter_results_path),
         api_key="k", base_url="https://openrouter.ai/api/v1", model="m",
         start_date="2024-03-01", end_date="2024-03-05", target_days=[1, 10, 20],
         client=ScriptedClient({"tweet positive": 1, "tweet negative": -1}),
@@ -77,14 +77,14 @@ def test_full_pipeline_weibo_and_twitter_to_plots(tmp_path):
     clean(
         platform="weibo", input_dir=str(weibo_dir), filename_pattern="{date}.parquet",
         start_date="2024-03-01", end_date="2024-03-05", target_days=[1, 10, 20],
-        opinion_results_path=str(weibo_results_path), output_path=str(weibo_daily_path),
+        opinion_results_dir=str(weibo_results_path), output_path=str(weibo_daily_path),
     )
 
     twitter_daily_path = output_dir / "twitter_daily_opinion.parquet"
     clean(
         platform="twitter", input_dir=str(twitter_dir), filename_pattern="tweets_{date}.parquet",
         start_date="2024-03-01", end_date="2024-03-05", target_days=[1, 10, 20],
-        opinion_results_path=str(twitter_results_path), output_path=str(twitter_daily_path),
+        opinion_results_dir=str(twitter_results_path), output_path=str(twitter_daily_path),
     )
 
     figure_data_path = output_dir / "figure_data.parquet"

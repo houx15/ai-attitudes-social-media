@@ -1,5 +1,7 @@
 from pathlib import Path
 import pandas as pd
+
+from results_helpers import seed_results
 import pytest
 
 from prepare_data import clean, export
@@ -21,8 +23,8 @@ def test_clean_computes_three_daily_metrics(tmp_path):
         "completion_tokens": [1, 1, 1],
         "cached_tokens": [0, 0, 0],
     })
-    opinion_results_path = tmp_path / "weibo_opinion_results.csv"
-    opinions.to_csv(opinion_results_path, index=False)
+    opinion_results_path = tmp_path / "weibo_opinion_results"
+    seed_results(opinion_results_path, opinions)
 
     output_path = tmp_path / "weibo_daily_opinion.parquet"
 
@@ -33,7 +35,7 @@ def test_clean_computes_three_daily_metrics(tmp_path):
         start_date="2024-03-01",
         end_date="2024-03-05",
         target_days=[1, 10, 20],
-        opinion_results_path=str(opinion_results_path),
+        opinion_results_dir=str(opinion_results_path),
         output_path=str(output_path),
     )
 
@@ -71,8 +73,8 @@ def test_clean_drops_cannot_tell_and_missing_opinions(tmp_path):
         "completion_tokens": [1, 1, 1],
         "cached_tokens": [0, 0, 0],
     })
-    opinion_results_path = tmp_path / "weibo_opinion_results.csv"
-    opinions.to_csv(opinion_results_path, index=False)
+    opinion_results_path = tmp_path / "weibo_opinion_results"
+    seed_results(opinion_results_path, opinions)
     output_path = tmp_path / "weibo_daily_opinion.parquet"
 
     result = clean(
@@ -82,7 +84,7 @@ def test_clean_drops_cannot_tell_and_missing_opinions(tmp_path):
         start_date="2024-03-01",
         end_date="2024-03-05",
         target_days=[1, 10, 20],
-        opinion_results_path=str(opinion_results_path),
+        opinion_results_dir=str(opinion_results_path),
         output_path=str(output_path),
     )
 
@@ -150,7 +152,7 @@ def _clean_weibo(tmp_path, opinion_results_path):
         start_date="2024-03-01",
         end_date="2024-03-05",
         target_days=[1, 10, 20],
-        opinion_results_path=str(opinion_results_path),
+        opinion_results_dir=str(opinion_results_path),
         output_path=str(tmp_path / "weibo_daily_opinion.parquet"),
     )
 
@@ -165,14 +167,14 @@ def test_clean_duplicate_ids_do_not_inflate_metrics(tmp_path):
         "zan": [0, 0, 0],
     }).to_parquet(tmp_path / "2024-03-01.parquet", index=False)
 
-    opinion_results_path = tmp_path / "weibo_opinion_results.csv"
-    pd.DataFrame({
+    opinion_results_path = tmp_path / "weibo_opinion_results"
+    seed_results(opinion_results_path, pd.DataFrame({
         "id": ["w1", "w1", "w2"],
         "opinion": [2, 2, -2],
         "prompt_tokens": [1, 1, 1],
         "completion_tokens": [1, 1, 1],
         "cached_tokens": [0, 0, 0],
-    }).to_csv(opinion_results_path, index=False)
+    }))
 
     result = _clean_weibo(tmp_path, opinion_results_path)
 
@@ -192,8 +194,8 @@ def test_clean_keeps_last_result_for_retried_id(tmp_path):
         "zan": [0, 0],
     }).to_parquet(tmp_path / "2024-03-01.parquet", index=False)
 
-    opinion_results_path = tmp_path / "weibo_opinion_results.csv"
-    opinion_results_path.write_text(
+    opinion_results_path = tmp_path / "weibo_opinion_results"
+    seed_results(opinion_results_path, 
         "id,opinion,prompt_tokens,completion_tokens,cached_tokens\n"
         "w1,1,1,1,0\n"
         "w2,-2,1,1,0\n"
@@ -216,14 +218,14 @@ def test_clean_prints_coverage_summary(tmp_path, capsys):
     }).to_parquet(tmp_path / "2024-03-01.parquet", index=False)
 
     # w4 has no result at all; w3 is cannot-tell -> 4 loaded, 3 matched, 2 valid
-    opinion_results_path = tmp_path / "weibo_opinion_results.csv"
-    pd.DataFrame({
+    opinion_results_path = tmp_path / "weibo_opinion_results"
+    seed_results(opinion_results_path, pd.DataFrame({
         "id": ["w1", "w2", "w3"],
         "opinion": [2, -1, "cannot tell"],
         "prompt_tokens": [1, 1, 1],
         "completion_tokens": [1, 1, 1],
         "cached_tokens": [0, 0, 0],
-    }).to_csv(opinion_results_path, index=False)
+    }))
 
     _clean_weibo(tmp_path, opinion_results_path)
 
@@ -256,9 +258,7 @@ def _install_fake_config(monkeypatch, tmp_path):
     results_dir = tmp_path / "output" / "analysis_results"
     results_dir.mkdir(parents=True, exist_ok=True)
     for platform in ("weibo", "twitter"):
-        (results_dir / f"{platform}_opinion_results.csv").write_text(
-            "id,opinion,prompt_tokens,completion_tokens,cached_tokens\n"
-        )
+        seed_results(results_dir / f"{platform}_opinion_results", "id,opinion\n")
     monkeypatch.setitem(sys.modules, "config", fake_config)
     return fake_config
 
@@ -326,11 +326,11 @@ def test_clean_keeps_substituted_day_under_its_actual_date(tmp_path):
         "weibo_id": ["w1", "w2"], "user_id": ["u1", "u2"],
         "weibo_content": ["a", "b"], "zan": [0, 0],
     }).to_parquet(tmp_path / "2024-02-29.parquet", index=False)
-    results_path = tmp_path / "weibo_opinion_results.csv"
-    pd.DataFrame({
+    results_path = tmp_path / "weibo_opinion_results"
+    seed_results(results_path, pd.DataFrame({
         "id": ["w1", "w2"], "opinion": [2, 0],
         "prompt_tokens": [1, 1], "completion_tokens": [1, 1], "cached_tokens": [0, 0],
-    }).to_csv(results_path, index=False)
+    }))
 
     result = clean(
         platform="weibo",
@@ -339,7 +339,7 @@ def test_clean_keeps_substituted_day_under_its_actual_date(tmp_path):
         start_date="2024-03-01",
         end_date="2024-03-05",
         target_days=[1, 10, 20],
-        opinion_results_path=str(results_path),
+        opinion_results_dir=str(results_path),
         output_path=str(tmp_path / "weibo_daily_opinion.parquet"),
         date_substitutions={"2024-03-01": "2024-02-29"},
     )
@@ -355,11 +355,11 @@ def test_clean_leaves_posts_with_missing_user_id_out_of_the_user_level_mean(tmp_
         "weibo_id": ["w1", "w2"], "user_id": [1001, None],
         "weibo_content": ["a", "b"], "zan": [0, 0],
     }).to_parquet(tmp_path / "2024-03-01.parquet", index=False)
-    results_path = tmp_path / "weibo_opinion_results.csv"
-    pd.DataFrame({
+    results_path = tmp_path / "weibo_opinion_results"
+    seed_results(results_path, pd.DataFrame({
         "id": ["w1", "w2"], "opinion": [2, -2],
         "prompt_tokens": [1, 1], "completion_tokens": [1, 1], "cached_tokens": [0, 0],
-    }).to_csv(results_path, index=False)
+    }))
 
     result = clean(
         platform="weibo",
@@ -368,7 +368,7 @@ def test_clean_leaves_posts_with_missing_user_id_out_of_the_user_level_mean(tmp_
         start_date="2024-03-01",
         end_date="2024-03-05",
         target_days=[1, 10, 20],
-        opinion_results_path=str(results_path),
+        opinion_results_dir=str(results_path),
         output_path=str(tmp_path / "weibo_daily_opinion.parquet"),
     )
 
@@ -386,11 +386,11 @@ def _write_twitter_day(tmp_path):
         "author.id": ["us1", "uk1", "us2"],
         "createdAt": ["Fri Mar 01 12:00:00 +0000 2024"] * 3,
     }).to_parquet(tmp_path / "tweets_2024-03-01.parquet", index=False)
-    results_path = tmp_path / "twitter_opinion_results.csv"
-    pd.DataFrame({
+    results_path = tmp_path / "twitter_opinion_results"
+    seed_results(results_path, pd.DataFrame({
         "id": ["t1", "t2", "t3"], "opinion": [2, -2, 0],
         "prompt_tokens": [1] * 3, "completion_tokens": [1] * 3, "cached_tokens": [0] * 3,
-    }).to_csv(results_path, index=False)
+    }))
     return results_path
 
 
@@ -406,7 +406,7 @@ def test_clean_keeps_only_listed_users_when_given_a_user_id_filter(tmp_path):
         start_date="2024-03-01",
         end_date="2024-03-05",
         target_days=[1, 10, 20],
-        opinion_results_path=str(results_path),
+        opinion_results_dir=str(results_path),
         output_path=str(tmp_path / "twitter_daily_opinion.parquet"),
         user_id_filter_path=str(user_filter),
     )
@@ -425,7 +425,7 @@ def test_clean_without_a_user_id_filter_keeps_everyone(tmp_path):
         start_date="2024-03-01",
         end_date="2024-03-05",
         target_days=[1, 10, 20],
-        opinion_results_path=str(results_path),
+        opinion_results_dir=str(results_path),
         output_path=str(tmp_path / "twitter_daily_opinion.parquet"),
     )
 
@@ -459,7 +459,7 @@ def test_clean_fails_loudly_when_us_userids_file_is_missing(tmp_path):
             start_date="2024-03-01",
             end_date="2024-03-05",
             target_days=[1, 10, 20],
-            opinion_results_path=str(results_path),
+            opinion_results_dir=str(results_path),
             output_path=str(tmp_path / "twitter_daily_opinion.parquet"),
             user_id_filter_path=str(tmp_path / "missing.json"),
         )
@@ -481,16 +481,16 @@ def test_missing_like_counts_are_weighted_per_platform_like_legacy(tmp_path):
         "author.id": ["a1", "a2"], "createdAt": ["Fri Mar 01 12:00:00 +0000 2024"] * 2,
     }).to_parquet(twitter_dir / "tweets_2024-03-01.parquet", index=False)
     for platform, ids in (("weibo", ["w1", "w2"]), ("twitter", ["t1", "t2"])):
-        pd.DataFrame({
+        seed_results(tmp_path / f"{platform}_results", pd.DataFrame({
             "id": ids, "opinion": [2, 0],
             "prompt_tokens": [1, 1], "completion_tokens": [1, 1], "cached_tokens": [0, 0],
-        }).to_csv(tmp_path / f"{platform}_results.csv", index=False)
+        }))
 
     def run(platform, input_dir, pattern):
         return clean(
             platform=platform, input_dir=str(input_dir), filename_pattern=pattern,
             start_date="2024-03-01", end_date="2024-03-05", target_days=[1, 10, 20],
-            opinion_results_path=str(tmp_path / f"{platform}_results.csv"),
+            opinion_results_dir=str(tmp_path / f"{platform}_results"),
             output_path=str(tmp_path / f"{platform}_daily.parquet"),
         ).iloc[0]
 
@@ -508,11 +508,11 @@ def test_clean_never_reads_the_text_column(tmp_path):
     pd.DataFrame({"weibo_id": ["w1", "w2"], "user_id": [1, 2], "zan": [0, 0]}).to_parquet(
         tmp_path / "2024-03-01.parquet", index=False
     )
-    results_path = tmp_path / "weibo_opinion_results.csv"
-    pd.DataFrame({
+    results_path = tmp_path / "weibo_opinion_results"
+    seed_results(results_path, pd.DataFrame({
         "id": ["w1", "w2"], "opinion": [2, 0],
         "prompt_tokens": [1, 1], "completion_tokens": [1, 1], "cached_tokens": [0, 0],
-    }).to_csv(results_path, index=False)
+    }))
 
     result = clean(
         platform="weibo",
@@ -521,7 +521,7 @@ def test_clean_never_reads_the_text_column(tmp_path):
         start_date="2024-03-01",
         end_date="2024-03-05",
         target_days=[1, 10, 20],
-        opinion_results_path=str(results_path),
+        opinion_results_dir=str(results_path),
         output_path=str(tmp_path / "weibo_daily_opinion.parquet"),
     )
 
@@ -533,10 +533,9 @@ def test_clean_reads_every_results_file_and_prefers_a_valid_label(tmp_path):
         "weibo_id": ["w1", "w2"], "user_id": [1, 2], "weibo_content": ["a", "b"], "zan": [0, 0],
     }).to_parquet(tmp_path / "2024-03-01.parquet", index=False)
     header = "id,opinion,prompt_tokens,completion_tokens,cached_tokens\n"
-    old = tmp_path / "weibo_opinion_results.csv"
-    old.write_text(header + "w1,2,1,1,0\nw2,,0,0,0\n")  # w2 failed in the first run
-    task = tmp_path / "weibo_opinion_results_task1of2.csv"
-    task.write_text(header + "w2,0,1,1,0\n")  # retried by a task
+    results_dir = tmp_path / "weibo_opinion_results"
+    seed_results(results_dir, header + "w1,2,1,1,0\nw2,,0,0,0\n", prefix="task1of1")  # w2 failed in the first run
+    seed_results(results_dir, header + "w2,0,1,1,0\n", prefix="task1of2")  # retried by a task
 
     result = clean(
         platform="weibo",
@@ -545,37 +544,43 @@ def test_clean_reads_every_results_file_and_prefers_a_valid_label(tmp_path):
         start_date="2024-03-01",
         end_date="2024-03-05",
         target_days=[1, 10, 20],
-        opinion_results_path=[str(old), str(task)],
+        opinion_results_dir=str(results_dir),
         output_path=str(tmp_path / "weibo_daily_opinion.parquet"),
     )
 
     assert result["avg_opinion"].tolist() == pytest.approx([1.0])  # mean(2, 0)
 
 
-def test_clean_cli_reads_all_of_a_platforms_results_files(tmp_path, monkeypatch):
+def test_clean_cli_reads_the_platforms_results_folder(tmp_path, monkeypatch):
     import prepare_data
 
     _install_fake_config(monkeypatch, tmp_path)
-    results_dir = tmp_path / "output" / "analysis_results"
-    for name in ("weibo_opinion_results.csv", "weibo_opinion_results_task2of4.csv",
-                 "twitter_opinion_results_task1of4.csv"):
-        (results_dir / name).write_text("id,opinion,prompt_tokens,completion_tokens,cached_tokens\n")
     captured = []
     monkeypatch.setattr(prepare_data, "clean", lambda **kw: captured.append(kw))
 
     prepare_data._clean_cli("weibo")
 
-    assert [Path(p).name for p in captured[0]["opinion_results_path"]] == [
-        "weibo_opinion_results.csv", "weibo_opinion_results_task2of4.csv"
-    ]
+    assert captured[0]["opinion_results_dir"].endswith("analysis_results/weibo_opinion_results")
+
+
+def test_clean_cli_fails_when_stage_1_has_no_results(tmp_path, monkeypatch):
+    import shutil
+
+    import prepare_data
+
+    _install_fake_config(monkeypatch, tmp_path)
+    shutil.rmtree(tmp_path / "output" / "analysis_results" / "weibo_opinion_results")
+
+    with pytest.raises(FileNotFoundError):
+        prepare_data._clean_cli("weibo")
 
 
 def test_clean_reports_which_providers_labelled_the_posts(tmp_path, capsys):
     pd.DataFrame({
         "weibo_id": ["w1", "w2", "w3"], "user_id": [1, 2, 3], "weibo_content": ["a", "b", "c"], "zan": [0, 0, 0],
     }).to_parquet(tmp_path / "2024-03-01.parquet", index=False)
-    results_path = tmp_path / "weibo_opinion_results.csv"
-    results_path.write_text(
+    results_path = tmp_path / "weibo_opinion_results"
+    seed_results(results_path, 
         "id,opinion,prompt_tokens,completion_tokens,cached_tokens,provider\n"
         "w1,1,1,1,0,DeepInfra\nw2,2,1,1,0,DeepInfra\nw3,0,1,1,0,Together\n"
     )
@@ -587,7 +592,7 @@ def test_clean_reports_which_providers_labelled_the_posts(tmp_path, capsys):
         start_date="2024-03-01",
         end_date="2024-03-05",
         target_days=[1, 10, 20],
-        opinion_results_path=str(results_path),
+        opinion_results_dir=str(results_path),
         output_path=str(tmp_path / "weibo_daily_opinion.parquet"),
     )
 

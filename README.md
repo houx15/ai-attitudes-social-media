@@ -58,14 +58,16 @@ own platform; your machine merges the two small daily files and plots.
 **Twitter server** (`config.py`: key, `TWITTER_INPUT_DIR`, `TWITTER_US_USERIDS_PATH`, `OUTPUT_DIR`)
 
 ```bash
-uv run python run_analysis.py twitter                  # Stage 1: label tweets via OpenRouter (resumable)
+./run_twitter.sh                                        # Stage 1: 4 parallel background tasks (resumable)
+tail -f logs/twitter_task*of4.log                       # watch; when all tasks have finished:
 uv run python prepare_data.py clean --platform twitter  # Stage 2: -> OUTPUT_DIR/twitter_daily_opinion.parquet
 ```
 
 **Weibo server** (`config.py`: key, `WEIBO_INPUT_DIR`, `OUTPUT_DIR`)
 
 ```bash
-uv run python run_analysis.py weibo
+./run_weibo.sh
+tail -f logs/weibo_task*of4.log
 uv run python prepare_data.py clean --platform weibo    # -> OUTPUT_DIR/weibo_daily_opinion.parquet
 ```
 
@@ -91,26 +93,21 @@ share the legacy names and would overwrite the published results.
   once. Measured on 2026-09-26 with the pipeline's settings (DeepInfra pinned,
   `probe_throughput.py`): ~23 posts/s at 32 in flight and ~52/s at 128, no errors.
   Rerun `uv run python probe_throughput.py` from each server before a big run.
-- **Split into parallel tasks** with `--task_id i --num_tasks n` (1-based), e.g. 4 tasks
-  × `MAX_WORKERS=32` ≈ 128 in flight:
-
-  ```bash
-  for i in 1 2 3 4; do
-    nohup uv run python run_analysis.py twitter --task_id $i --num_tasks 4 > twitter_task$i.log 2>&1 &
-  done
-  # SLURM: sbatch --array=1-4 ... uv run python run_analysis.py weibo --task_id $SLURM_ARRAY_TASK_ID --num_tasks 4
-  ```
-
-  Days are split so each task gets a similar number of posts; each task writes
-  `{platform}_opinion_results_task{i}of{n}.csv`. Every task skips posts already labelled in
-  **any** of the platform's results files, so an earlier single run's
-  `{platform}_opinion_results.csv` counts as done (stop it before starting the tasks). Use
-  the same `--num_tasks` for all tasks of one run. `clean` reads all the files.
-- Results files from before provider recording (no `provider` column) are refused
-  when appending: move such a file out of `analysis_results/` so its posts are
-  re-labelled by the pinned provider.
-- Resumable: rerunning skips posts that already have a valid label and retries failed
-  ones. Results append to `OUTPUT_DIR/analysis_results/{platform}_opinion_results.csv`.
+- **Parallel tasks.** `./run_twitter.sh [N]` / `./run_weibo.sh [N]` (default N = 4) start
+  N background tasks with `nohup`, one log each in `logs/`, and refuse to start if that
+  platform is already running. Stop with `pkill -f 'run_analysis.py twitter'` (labels so
+  far are saved); rerun the script to resume. Under the hood each task is
+  `run_analysis.py PLATFORM --task_id i --num_tasks N` (1-based), which SLURM can also
+  run: `sbatch --array=1-4 ... --task_id $SLURM_ARRAY_TASK_ID --num_tasks 4`. Days are
+  split so each task gets a similar number of posts. Use the same N for all tasks of one
+  run.
+- **Results** are parquet parts in `OUTPUT_DIR/analysis_results/{platform}_opinion_results/`
+  (`task2of4-part000001.parquet`, ...) with columns `id, opinion, prompt_tokens,
+  completion_tokens, cached_tokens, provider`. Each task writes a new part every 1,000
+  labels and when it stops, so a crash loses at most one part's worth, which is re-sent
+  on resume. Every task skips posts with a valid label in **any** part (any earlier run
+  or task) and retries failed ones. Older CSV results are not read: move them aside so
+  those posts are re-labelled by the pinned provider.
 - Shows a progress bar (done/total, speed, ETA, completed/failed, tokens in/out) and
   prints token totals for the run and for all runs so far. Under `nohup ... > log` the
   bar refreshes every 30s.

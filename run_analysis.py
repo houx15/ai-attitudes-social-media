@@ -8,9 +8,10 @@ Usage:
     python run_analysis.py twitter --task_id 2 --num_tasks 4   # one of 4 parallel tasks
 """
 
-from pathlib import Path
 
 from typing import Dict, List, Optional, Sequence, Union
+
+import signal
 
 import fire
 
@@ -22,7 +23,7 @@ def analyze(
     platform: str,
     input_dir: str,
     filename_pattern: str,
-    output_path: str,
+    results_dir: str,
     api_key: str,
     base_url: str,
     model: str,
@@ -56,17 +57,16 @@ def analyze(
             backoff_base_seconds=backoff_base_seconds,
         )
 
-    # A post labelled by any earlier run or task of this platform is not re-sent.
-    output_path = Path(output_path)
-    done_paths = sorted(set(output_path.parent.glob(f"{platform}_opinion_results*.csv")) | {output_path})
+    # All runs and tasks of a platform share results_dir; a post labelled by any
+    # of them is not re-sent.
     summary = analyze_stream(
         client,
         iter_platform_days(platform, files),
-        str(output_path),
+        results_dir,
+        part_prefix=f"task{task_id}of{num_tasks}",
         max_workers=workers,
         desc=platform if num_tasks == 1 else f"{platform} {task_id}/{num_tasks}",
         total_rows=count_input_rows(files),
-        done_paths=[str(p) for p in done_paths],
     )
     print(f"Stage 1 analysis summary for {platform}: {summary}")
     return summary
@@ -89,15 +89,14 @@ def main(
         if platform == "weibo"
         else config.TWITTER_FILENAME_PATTERN
     )
-    suffix = "" if num_tasks == 1 else f"_task{task_id}of{num_tasks}"
-    output_path = f"{config.OUTPUT_DIR}/analysis_results/{platform}_opinion_results{suffix}.csv"
+    results_dir = f"{config.OUTPUT_DIR}/analysis_results/{platform}_opinion_results"
     days = parse_target_days(target_days) if target_days is not None else config.TARGET_DAYS
 
     analyze(
         platform=platform,
         input_dir=input_dir,
         filename_pattern=filename_pattern,
-        output_path=output_path,
+        results_dir=results_dir,
         api_key=config.OPENROUTER_API_KEY,
         base_url=config.OPENROUTER_BASE_URL,
         model=config.OPENROUTER_MODEL,
@@ -115,4 +114,6 @@ def main(
 
 
 if __name__ == "__main__":
+    # A plain kill (pkill, SLURM time limit) stops like Ctrl-C, saving buffered labels.
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
     fire.Fire(main)

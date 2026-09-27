@@ -24,7 +24,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from openrouter_client import PROVIDER, normalize_opinion
+from openrouter_client import PROVIDER, normalize_opinion, results_parts
 from prompts import SYSTEM_PROMPT
 
 REPO = Path(__file__).resolve().parent
@@ -342,11 +342,9 @@ def run_cli(*args):
 
 
 def read_results(platform):
-    """All of a platform's results files (every run and task), file name -> rows."""
-    return {
-        path.name: pd.read_csv(path, dtype=str, keep_default_na=False)
-        for path in sorted((OUTPUT_DIR / "analysis_results").glob(f"{platform}_opinion_results*.csv"))
-    }
+    """All of a platform's result parts (every run and task), part name -> rows."""
+    results_dir = OUTPUT_DIR / "analysis_results" / f"{platform}_opinion_results"
+    return {path.name: pd.read_parquet(path) for path in results_parts(str(results_dir))}
 
 
 def all_rows(snapshot):
@@ -354,7 +352,7 @@ def all_rows(snapshot):
 
 
 def new_rows(before, after):
-    """Rows appended to any results file between two read_results snapshots."""
+    """Rows in parts added between two read_results snapshots (parts never change)."""
     return pd.concat(
         [rows.iloc[len(before.get(name, [])):] for name, rows in after.items()], ignore_index=True
     )

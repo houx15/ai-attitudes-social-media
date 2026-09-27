@@ -1,15 +1,15 @@
 """Concurrent OpenRouter chat-completions client used by both platforms
 (replaces the old OpenAI Batch API + hosted-prompt mechanism)."""
 
-import csv
 import json
 import logging
+import os
 import sys
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional, Union
+from typing import Any, Dict, Iterable, List, Optional, Union
 
 import pandas as pd
 from tqdm import tqdm
@@ -20,7 +20,11 @@ logger = logging.getLogger(__name__)
 
 VALID_NUMERIC_OPINIONS = {-2, -1, 0, 1, 2}
 CANNOT_TELL = "cannot tell"
-RESULTS_HEADER = ["id", "opinion", "prompt_tokens", "completion_tokens", "cached_tokens", "provider"]
+RESULTS_COLUMNS = ["id", "opinion", "prompt_tokens", "completion_tokens", "cached_tokens", "provider"]
+TOKEN_COLUMNS = ["prompt_tokens", "cached_tokens", "completion_tokens"]
+# Labels are buffered and written as a new parquet part every FLUSH_ROWS rows
+# (and at the end). A crash loses at most one buffer; those posts are re-sent.
+FLUSH_ROWS = 1000
 # Fixed for every request on both platforms, like the prompt:
 # - no thinking step, and deterministic decoding;
 # - one upstream provider (fp8), never silently switching: if it is unavailable
@@ -139,21 +143,42 @@ class OpenRouterClient:
         }
 
 
-def load_processed_ids(results_path: str) -> set:
-    path = Path(results_path)
-    if not path.exists() or path.stat().st_size == 0:
-        return set()
-    df = pd.read_csv(path, dtype=str, keep_default_na=False)
-    if "id" not in df.columns or "opinion" not in df.columns:
-        return set()
-    # Only rows with a valid opinion count as done; failed rows (empty or
-    # invalid opinion) are retried on the next run instead of being dropped.
+def results_parts(results_dir: str, task: Optional[str] = None) -> List[Path]:
+    """A platform's results are parquet parts `{task}-part{n}.parquet` in one folder;
+    `task` (e.g. "task2of4") selects one task's parts exactly."""
+    return sorted(Path(results_dir).glob(f"{task}-part*.parquet" if task else "*-part*.parquet"))
+
+
+def read_results(results_dir: str, columns: Optional[List[str]] = None, task: Optional[str] = None) -> pd.DataFrame:
+    """All labels in a results folder (optionally one task's), oldest part first."""
+    parts = results_parts(results_dir, task)
+    if not parts:
+        return pd.DataFrame(columns=columns or RESULTS_COLUMNS)
+    return pd.concat([pd.read_parquet(part, columns=columns) for part in parts], ignore_index=True)
+
+
+def write_results_part(results_dir: str, prefix: str, rows: List[Dict]) -> Path:
+    """Write rows as the task's next part. Written to a temp name and renamed, so a
+    crash never leaves a half-written part."""
+    folder = Path(results_dir)
+    folder.mkdir(parents=True, exist_ok=True)
+    existing = [int(p.stem.rsplit("-part", 1)[1]) for p in results_parts(results_dir, prefix)]
+    path = folder / f"{prefix}-part{max(existing, default=0) + 1:06d}.parquet"
+    df = pd.DataFrame(rows, columns=RESULTS_COLUMNS).astype(
+        {"id": "string", "opinion": "string", "provider": "string",
+         "prompt_tokens": "int64", "completion_tokens": "int64", "cached_tokens": "int64"}
+    )
+    tmp = path.with_name(path.name + ".tmp")
+    df.to_parquet(tmp, index=False)
+    os.replace(tmp, path)
+    return path
+
+
+def load_processed_ids(results_dir: str) -> set:
+    """Ids with a valid label in any part; failed attempts are retried, not skipped."""
+    df = read_results(results_dir, columns=["id", "opinion"])
     valid = df["opinion"].map(normalize_opinion).notna()
-    ids = df.loc[valid, "id"]
-    return set(ids[ids != ""].unique())
-
-
-TOKEN_COLUMNS = ["prompt_tokens", "cached_tokens", "completion_tokens"]
+    return set(df.loc[valid, "id"].astype(str))
 
 
 def format_tokens(n: int) -> str:
@@ -173,55 +198,45 @@ def _print_token_summary(desc: str, label: str, totals: Dict[str, int]) -> None:
 
 
 def analyze_many(
-    client, df: pd.DataFrame, results_path: str, max_workers: int = 8, desc: str = "Analyzing"
+    client, df: pd.DataFrame, results_dir: str, max_workers: int = 8, desc: str = "Analyzing"
 ) -> Dict:
     """Analyze the posts in one frame (see analyze_stream)."""
-    return analyze_stream(client, [df], results_path, max_workers=max_workers, desc=desc, total_rows=len(df))
+    return analyze_stream(client, [df], results_dir, max_workers=max_workers, desc=desc, total_rows=len(df))
 
 
 def analyze_stream(
     client,
     frames: Iterable[pd.DataFrame],
-    results_path: str,
+    results_dir: str,
+    part_prefix: str = "task1of1",
     max_workers: int = 8,
     desc: str = "Analyzing",
     total_rows: Optional[int] = None,
-    done_paths: Optional[Iterable[str]] = None,
+    flush_rows: int = FLUSH_ROWS,
 ) -> Dict:
-    """Label posts frame by frame (one day at a time), appending to the results CSV.
+    """Label posts frame by frame (one day at a time) into parquet parts.
 
     Only max_workers * 4 requests are ever queued, so memory stays flat however
     many posts there are, and the next frame is read only when needed. Posts
-    whose id already has a valid label in the results CSV are skipped.
+    with a valid label anywhere in results_dir (any run, any task) are skipped.
     """
-    path = Path(results_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Posts with a valid label in any of these files are skipped (default: this
-    # run's own results file).
-    done_paths = list(done_paths) if done_paths is not None else [results_path]
-    processed_ids = set()
-    for done_path in done_paths:
-        processed_ids |= load_processed_ids(done_path)
-    print(
-        f"{desc}: {len(processed_ids):,} posts already labelled in "
-        + ", ".join(Path(d).name for d in done_paths),
-        flush=True,
-    )
+    processed_ids = load_processed_ids(results_dir)
+    print(f"{desc}: {len(processed_ids):,} posts already labelled in {Path(results_dir).name}/", flush=True)
 
     summary = {"total": 0, "skipped": 0, "completed": 0, "failed": 0}
     run_tokens = {column: 0 for column in TOKEN_COLUMNS}
-    write_lock = threading.Lock()
-    write_header = not path.exists() or path.stat().st_size == 0
-    if not write_header:
-        with open(path, "r", encoding="utf-8", newline="") as f:
-            existing_header = next(csv.reader(f), [])
-        if existing_header != RESULTS_HEADER:
-            raise ValueError(
-                f"{path} was written in an older format without the provider column. "
-                "Move it out of analysis_results/ so its posts are re-labelled by the "
-                "pinned provider, then rerun."
-            )
+    buffer_lock = threading.Lock()
+    buffer = []
+
+    def flush_locked():
+        # Caller holds buffer_lock, so parts are numbered and written one at a time.
+        if buffer:
+            write_results_part(results_dir, part_prefix, buffer)
+            buffer.clear()
+
+    def flush():
+        with buffer_lock:
+            flush_locked()
 
     def process_row(row_id, row_text):
         try:
@@ -235,24 +250,18 @@ def analyze_stream(
                 "cached_tokens": 0,
                 "provider": "",
             }
-        opinion_value = "" if result["opinion"] is None else result["opinion"]
-        nonlocal write_header
-        with write_lock:
-            with open(path, "a", encoding="utf-8", newline="") as f:
-                writer = csv.writer(f)
-                if write_header:
-                    writer.writerow(RESULTS_HEADER)
-                    write_header = False
-                writer.writerow(
-                    [
-                        row_id,
-                        opinion_value,
-                        result["prompt_tokens"],
-                        result["completion_tokens"],
-                        result["cached_tokens"],
-                        result.get("provider") or "",
-                    ]
-                )
+        row = {
+            "id": row_id,
+            "opinion": None if result["opinion"] is None else str(result["opinion"]),
+            "prompt_tokens": int(result.get("prompt_tokens") or 0),
+            "completion_tokens": int(result.get("completion_tokens") or 0),
+            "cached_tokens": int(result.get("cached_tokens") or 0),
+            "provider": result.get("provider") or "",
+        }
+        with buffer_lock:
+            buffer.append(row)
+            if len(buffer) >= flush_rows:
+                flush_locked()
         return result
 
     def record(future, bar):
@@ -306,13 +315,15 @@ def analyze_stream(
     except KeyboardInterrupt:
         executor.shutdown(wait=False, cancel_futures=True)
         bar.close()
-        print(f"\n{desc}: interrupted; rerun the same command to resume.", flush=True)
+        flush()
+        print(f"\n{desc}: interrupted; labels so far are saved, rerun the same command to resume.", flush=True)
         raise
     executor.shutdown()
     bar.close()
+    flush()
 
     _print_token_summary(desc, "this run", run_tokens)
-    if path.exists():
-        all_runs = pd.read_csv(path, usecols=TOKEN_COLUMNS).fillna(0).astype(int).sum()
-        _print_token_summary(desc, "all runs", {column: int(all_runs[column]) for column in TOKEN_COLUMNS})
+    this_task = read_results(results_dir, columns=TOKEN_COLUMNS, task=part_prefix)
+    task_totals = this_task.fillna(0).astype("int64").sum()
+    _print_token_summary(desc, "all runs", {column: int(task_totals.get(column, 0)) for column in TOKEN_COLUMNS})
     return summary

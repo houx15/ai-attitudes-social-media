@@ -1,5 +1,7 @@
 import pandas as pd
 
+from openrouter_client import results_parts
+from results_helpers import seed_results
 from run_analysis import analyze
 
 
@@ -25,14 +27,14 @@ def test_analyze_weibo_end_to_end(tmp_path):
         "zan": [5],
     })
     day1.to_parquet(tmp_path / "2024-03-01.parquet", index=False)
-    output_path = tmp_path / "out" / "weibo_opinion_results.csv"
+    results_dir = tmp_path / "out" / "weibo_opinion_results"
     client = FakeClient()
 
     summary = analyze(
         platform="weibo",
         input_dir=str(tmp_path),
         filename_pattern="{date}.parquet",
-        output_path=str(output_path),
+        results_dir=str(results_dir),
         api_key="k",
         base_url="https://openrouter.ai/api/v1",
         model="m",
@@ -45,18 +47,18 @@ def test_analyze_weibo_end_to_end(tmp_path):
 
     assert summary["completed"] == 1
     assert client.calls == ["AI is great"]
-    assert output_path.exists()
+    assert results_parts(str(results_dir))
 
 
 def test_analyze_returns_zero_summary_when_no_input(tmp_path):
-    output_path = tmp_path / "out" / "twitter_opinion_results.csv"
+    results_dir = tmp_path / "out" / "twitter_opinion_results"
     client = FakeClient()
 
     summary = analyze(
         platform="twitter",
         input_dir=str(tmp_path),
         filename_pattern="tweets_{date}.parquet",
-        output_path=str(output_path),
+        results_dir=str(results_dir),
         api_key="k",
         base_url="https://openrouter.ai/api/v1",
         model="m",
@@ -78,7 +80,7 @@ def test_analyze_rejects_unknown_platform(tmp_path):
             platform="reddit",
             input_dir=str(tmp_path),
             filename_pattern="{date}.parquet",
-            output_path=str(tmp_path / "out.csv"),
+            results_dir=str(tmp_path / "out"),
             api_key="k",
             base_url="https://openrouter.ai/api/v1",
             model="m",
@@ -124,7 +126,7 @@ def test_analyze_passes_timeout_and_backoff_to_constructed_client(tmp_path, monk
         platform="weibo",
         input_dir=str(tmp_path),
         filename_pattern="{date}.parquet",
-        output_path=str(tmp_path / "out.csv"),
+        results_dir=str(tmp_path / "out"),
         api_key="k",
         base_url="https://openrouter.ai/api/v1",
         model="m",
@@ -248,7 +250,7 @@ def test_analyze_reads_substituted_day(tmp_path):
         platform="weibo",
         input_dir=str(tmp_path),
         filename_pattern="{date}.parquet",
-        output_path=str(tmp_path / "out.csv"),
+        results_dir=str(tmp_path / "out"),
         api_key="k",
         base_url="https://openrouter.ai/api/v1",
         model="m",
@@ -262,36 +264,34 @@ def test_analyze_reads_substituted_day(tmp_path):
     assert client.calls == ["AI is great"]
 
 
-def test_main_writes_one_results_file_per_task(captured_analyze):
+def test_main_passes_the_platform_results_folder_and_task(captured_analyze):
     from run_analysis import main
 
     main("twitter")
     main("twitter", task_id=2, num_tasks=4)
 
-    assert captured_analyze[0]["output_path"].endswith("analysis_results/twitter_opinion_results.csv")
+    # all runs and tasks share one results folder; parts are named by task
+    for call in captured_analyze:
+        assert call["results_dir"].endswith("analysis_results/twitter_opinion_results")
     assert captured_analyze[0]["task_id"] == 1 and captured_analyze[0]["num_tasks"] == 1
-    assert captured_analyze[1]["output_path"].endswith("analysis_results/twitter_opinion_results_task2of4.csv")
     assert captured_analyze[1]["task_id"] == 2 and captured_analyze[1]["num_tasks"] == 4
 
 
 def test_analyze_task_skips_posts_labelled_in_any_results_file(tmp_path):
-    # The earlier single-task run's file counts as done for every task.
+    # The earlier single-task run's labels count as done for every task.
     pd.DataFrame({
         "weibo_id": ["w1", "w2", "w3"], "user_id": [1, 2, 3],
         "weibo_content": ["a", "b", "c"], "zan": [0, 0, 0],
     }).to_parquet(tmp_path / "2024-03-01.parquet", index=False)
-    results_dir = tmp_path / "out" / "analysis_results"
-    results_dir.mkdir(parents=True)
-    (results_dir / "weibo_opinion_results.csv").write_text(
-        "id,opinion,prompt_tokens,completion_tokens,cached_tokens\nw1,1,1,1,0\nw2,,0,0,0\n"
-    )
+    results_dir = tmp_path / "out" / "analysis_results" / "weibo_opinion_results"
+    seed_results(results_dir, "id,opinion,prompt_tokens,completion_tokens,cached_tokens\nw1,1,1,1,0\nw2,,0,0,0\n")
     client = FakeClient()
 
     summary = analyze(
         platform="weibo",
         input_dir=str(tmp_path),
         filename_pattern="{date}.parquet",
-        output_path=str(results_dir / "weibo_opinion_results_task1of2.csv"),
+        results_dir=str(results_dir),
         api_key="k",
         base_url="https://openrouter.ai/api/v1",
         model="m",

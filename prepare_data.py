@@ -16,20 +16,14 @@ import fire
 import pandas as pd
 
 from loaders import day_files, iter_platform_days, parse_target_days
-from openrouter_client import normalize_opinion
+from openrouter_client import normalize_opinion, read_results, results_parts
 
 
-def _load_opinions(opinion_results_path: Union[str, List[str]]) -> pd.DataFrame:
-    paths = [opinion_results_path] if isinstance(opinion_results_path, str) else opinion_results_path
-    opinions = pd.concat(
-        [
-            pd.read_csv(p, usecols=lambda c: c in ("id", "opinion", "provider"), dtype={"id": str, "provider": str})
-            for p in paths
-        ],
-        ignore_index=True,
-    )
-    # A retried post appears again (later in its file, or in another task's
-    # file). Each post counts once: its latest valid label, else its latest attempt.
+def _load_opinions(opinion_results_dir: str) -> pd.DataFrame:
+    opinions = read_results(opinion_results_dir, columns=["id", "opinion", "provider"])
+    opinions = opinions.astype({"id": str})
+    # A retried post appears again (a later part, or another task's part). Each
+    # post counts once: its latest valid label, else its latest attempt.
     valid = opinions["opinion"].map(normalize_opinion).notna()
     opinions = opinions.assign(_valid=valid).sort_values("_valid", kind="stable")
     return opinions.drop_duplicates(subset=["id"], keep="last").drop(columns="_valid")
@@ -42,7 +36,7 @@ def clean(
     start_date: str,
     end_date: str,
     target_days: List[int],
-    opinion_results_path: Union[str, List[str]],
+    opinion_results_dir: str,
     output_path: str,
     date_substitutions: Optional[Dict[str, str]] = None,
     user_id_filter_path: Optional[str] = None,
@@ -56,7 +50,7 @@ def clean(
     files = day_files(
         platform, input_dir, filename_pattern, start_date, end_date, target_days, date_substitutions
     )
-    opinions = _load_opinions(opinion_results_path)
+    opinions = _load_opinions(opinion_results_dir)
     kept_user_ids = None
     if user_id_filter_path is not None:
         with open(user_id_filter_path, "r") as f:
@@ -159,11 +153,9 @@ def _clean_cli(
         else config.TWITTER_FILENAME_PATTERN
     )
     # Every run and task of this platform (see run_analysis.py --task_id).
-    opinion_results_path = sorted(
-        str(p) for p in Path(config.OUTPUT_DIR, "analysis_results").glob(f"{platform}_opinion_results*.csv")
-    )
-    if not opinion_results_path:
-        raise FileNotFoundError(f"No {platform}_opinion_results*.csv in {config.OUTPUT_DIR}/analysis_results")
+    opinion_results_dir = f"{config.OUTPUT_DIR}/analysis_results/{platform}_opinion_results"
+    if not results_parts(opinion_results_dir):
+        raise FileNotFoundError(f"No Stage 1 results in {opinion_results_dir}/")
     output_path = f"{config.OUTPUT_DIR}/{platform}_daily_opinion.parquet"
 
     clean(
@@ -175,7 +167,7 @@ def _clean_cli(
         target_days=(
             parse_target_days(target_days) if target_days is not None else config.TARGET_DAYS
         ),
-        opinion_results_path=opinion_results_path,
+        opinion_results_dir=opinion_results_dir,
         output_path=output_path,
         date_substitutions=getattr(config, "DATE_SUBSTITUTIONS", {}).get(platform, {}),
         user_id_filter_path=user_id_filter_path,
