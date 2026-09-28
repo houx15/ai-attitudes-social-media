@@ -29,6 +29,62 @@ def _load_opinions(opinion_results_dir: str) -> pd.DataFrame:
     return opinions.drop_duplicates(subset=["id"], keep="last").drop(columns="_valid")
 
 
+ATTITUDES = ["2", "1", "0", "-1", "-2"]
+CANNOT_TELL_KEY = "cannot tell"
+UNLABELED_KEY = "unlabeled"
+
+
+def _label_key(value) -> str:
+    """"2".."-2", "cannot tell", or "unlabeled" (failed, invalid, or never sent)."""
+    label = normalize_opinion(value)
+    return UNLABELED_KEY if label is None else str(label)
+
+
+def _label_summary(labels: Counter) -> dict:
+    with_attitude = sum(labels[a] for a in ATTITUDES)
+    return {
+        "posts": sum(labels.values()),
+        "with_attitude": with_attitude,
+        "cannot_tell": labels[CANNOT_TELL_KEY],
+        "unlabeled": labels[UNLABELED_KEY],
+        "attitude_counts": {a: labels[a] for a in ATTITUDES},
+        "attitude_percent": {
+            a: (round(100 * labels[a] / with_attitude, 2) if with_attitude else None)
+            for a in ATTITUDES
+        },
+    }
+
+
+def _print_sample_stats(stats: dict) -> None:
+    sample, analytic, user_filter = stats["sample"], stats["analytic"], stats["user_filter"]
+    print(
+        f"Sample statistics for {stats['platform']} "
+        f"({stats['start_date']}..{stats['end_date']}, {len(stats['dates'])} dates):"
+    )
+    print(
+        f"  Input files: {sample['raw_rows']:,} rows; after removing "
+        f"{sample['duplicates_removed']:,} duplicate ids: {sample['posts']:,} posts "
+        f"from {sample['users']:,} users"
+    )
+    if user_filter is not None:
+        print(
+            f"  User filter: {user_filter['listed_users']:,} users listed; "
+            f"{analytic['users']:,} of them posted, {analytic['posts']:,} posts"
+        )
+    print(
+        f"  Analytic subset: {analytic['posts']:,} posts: "
+        f"{analytic['with_attitude']:,} with an attitude, "
+        f"{analytic['cannot_tell']:,} cannot tell, {analytic['unlabeled']:,} unlabeled"
+    )
+    print(
+        "  Attitude distribution (% of posts with an attitude): "
+        + ", ".join(
+            f"{a} = {p:.2f}%" if p is not None else f"{a} = n/a"
+            for a, p in analytic["attitude_percent"].items()
+        )
+    )
+
+
 def clean(
     platform: str,
     input_dir: str,
@@ -46,11 +102,16 @@ def clean(
     Each file contributes sums and counts (per date, and per date and user); the
     three metrics are computed from their totals, which is identical to computing
     them over all posts at once.
+
+    Also writes `{platform}_sample_stats.json` next to `output_path`: post and
+    user counts, and the label breakdown of the analytic subset (after the user
+    filter), for the paper's data description.
     """
     files = day_files(
         platform, input_dir, filename_pattern, start_date, end_date, target_days, date_substitutions
     )
     opinions = _load_opinions(opinion_results_dir)
+    label_by_id = opinions.set_index("id")["opinion"].map(_label_key)
     kept_user_ids = None
     if user_id_filter_path is not None:
         with open(user_id_filter_path, "r") as f:
@@ -59,9 +120,22 @@ def clean(
     counts = {"loaded": 0, "matched": 0, "user_filtered": 0, "valid": 0}
     providers = Counter()
     kept_users = set()
+    raw_rows, sample_users, analytic_users = 0, set(), set()
+    sample_labels, analytic_labels = Counter(), Counter()
+    posts_by_date = Counter()
     date_parts, user_parts = [], []
     for frame in iter_platform_days(platform, files, with_text=False):
         counts["loaded"] += len(frame)
+        raw_rows += frame.attrs.get("raw_rows", len(frame))
+        labels = frame["id"].map(label_by_id).fillna(UNLABELED_KEY)
+        sample_labels.update(labels)
+        sample_users.update(frame["user_id"].dropna())
+        analytic = frame["user_id"].isin(kept_user_ids) if kept_user_ids is not None else None
+        analytic_frame = frame if analytic is None else frame[analytic]
+        analytic_labels.update(labels if analytic is None else labels[analytic])
+        analytic_users.update(analytic_frame["user_id"].dropna())
+        posts_by_date.update(analytic_frame["date"])
+
         merged = frame.merge(opinions, on="id", how="inner")
         counts["matched"] += len(merged)
 
@@ -112,6 +186,33 @@ def clean(
         f"{counts['valid']} with a valid numeric opinion"
     )
     print("Labels by provider: " + ", ".join(f"{name} {n}" for name, n in providers.most_common()))
+
+    stats = {
+        "platform": platform,
+        "start_date": start_date,
+        "end_date": end_date,
+        "target_days": list(target_days),
+        "dates": [date for date, _ in files],
+        "sample": {
+            "raw_rows": raw_rows,
+            "duplicates_removed": raw_rows - counts["loaded"],
+            "posts": counts["loaded"],
+            "users": len(sample_users),
+            "labels": _label_summary(sample_labels),
+        },
+        "user_filter": (
+            None
+            if kept_user_ids is None
+            else {"path": user_id_filter_path, "listed_users": len(set(kept_user_ids))}
+        ),
+        "analytic": {"users": len(analytic_users), **_label_summary(analytic_labels)},
+        "analytic_posts_by_date": dict(sorted(posts_by_date.items())),
+    }
+    _print_sample_stats(stats)
+    stats_path = Path(output_path).with_name(f"{platform}_sample_stats.json")
+    stats_path.parent.mkdir(parents=True, exist_ok=True)
+    stats_path.write_text(json.dumps(stats, indent=2, ensure_ascii=False))
+    print(f"Saved sample statistics to {stats_path}")
 
     if date_parts:
         by_date = pd.concat(date_parts).groupby(level="date").sum()

@@ -597,3 +597,62 @@ def test_clean_reports_which_providers_labelled_the_posts(tmp_path, capsys):
     )
 
     assert "Labels by provider: DeepInfra 2, Together 1" in capsys.readouterr().out
+
+
+def test_clean_writes_sample_statistics_for_the_data_description(tmp_path, capsys):
+    import json
+
+    tweet = {"text": "x", "likeCount": 0}
+    pd.DataFrame([
+        {"id": "t1", "author.id": "us1", "createdAt": "Fri Mar 01 12:00:00 +0000 2024", **tweet},
+        {"id": "t1", "author.id": "us1", "createdAt": "Fri Mar 01 12:00:00 +0000 2024", **tweet},
+        {"id": "t2", "author.id": "us1", "createdAt": "Fri Mar 01 13:00:00 +0000 2024", **tweet},
+        {"id": "t3", "author.id": "uk1", "createdAt": "Fri Mar 01 14:00:00 +0000 2024", **tweet},
+    ]).to_parquet(tmp_path / "tweets_2024-03-01.parquet", index=False)
+    pd.DataFrame([
+        {"id": "t1", "author.id": "us1", "createdAt": "Sun Mar 10 12:00:00 +0000 2024", **tweet},
+        {"id": "t4", "author.id": "us2", "createdAt": "Sun Mar 10 12:00:00 +0000 2024", **tweet},
+        {"id": "t5", "author.id": "us2", "createdAt": "Sun Mar 10 13:00:00 +0000 2024", **tweet},
+    ]).to_parquet(tmp_path / "tweets_2024-03-10.parquet", index=False)
+    results_path = tmp_path / "twitter_opinion_results"
+    # t4 has no label (failed); t5 was never sent.
+    seed_results(results_path, pd.DataFrame({
+        "id": ["t1", "t2", "t3", "t4"], "opinion": [2, "cannot tell", -1, None],
+        "prompt_tokens": [1] * 4, "completion_tokens": [1] * 4, "cached_tokens": [0] * 4,
+    }))
+    user_filter = tmp_path / "us_userids.json"
+    user_filter.write_text('["us1", "us2", "us3"]')
+
+    clean(
+        platform="twitter",
+        input_dir=str(tmp_path),
+        filename_pattern="tweets_{date}.parquet",
+        start_date="2024-03-01",
+        end_date="2024-03-15",
+        target_days=[1, 10, 20],
+        opinion_results_dir=str(results_path),
+        output_path=str(tmp_path / "out" / "twitter_daily_opinion.parquet"),
+        user_id_filter_path=str(user_filter),
+    )
+
+    stats = json.loads((tmp_path / "out" / "twitter_sample_stats.json").read_text())
+    assert stats["dates"] == ["2024-03-01", "2024-03-10"]
+    assert stats["sample"]["raw_rows"] == 7
+    assert stats["sample"]["duplicates_removed"] == 2
+    assert stats["sample"]["posts"] == 5
+    assert stats["sample"]["users"] == 3
+    assert stats["user_filter"]["listed_users"] == 3
+    analytic = stats["analytic"]
+    assert analytic["users"] == 2  # us1, us2 (us3 never posted; uk1 filtered out)
+    assert analytic["posts"] == 4  # t1, t2, t4, t5
+    assert analytic["with_attitude"] == 1
+    assert analytic["cannot_tell"] == 1
+    assert analytic["unlabeled"] == 2
+    assert analytic["attitude_counts"] == {"2": 1, "1": 0, "0": 0, "-1": 0, "-2": 0}
+    assert analytic["attitude_percent"]["2"] == 100.0
+    assert stats["sample"]["labels"]["attitude_counts"]["-1"] == 1  # uk1's t3
+    assert stats["analytic_posts_by_date"] == {"2024-03-01": 2, "2024-03-10": 2}
+
+    out = capsys.readouterr().out
+    assert "Analytic subset: 4 posts: 1 with an attitude, 1 cannot tell, 2 unlabeled" in out
+    assert "2 = 100.00%, 1 = 0.00%" in out

@@ -128,6 +128,13 @@ share the legacy names and would overwrite the published results.
   opinion) so a partial or mismatched run is visible.
 - Twitter is always restricted to US users listed in `TWITTER_US_USERIDS_PATH` (the old
   `--location us`). Stage 1 still labels all tweets, as before.
+- Prints and saves the numbers for the paper's data description to
+  `OUTPUT_DIR/{platform}_sample_stats.json`:
+  - input rows, duplicate ids removed, posts, and unique users;
+  - for Twitter, the size of the US user list and how many of those users actually posted;
+  - for the analytic subset (US users for Twitter, all posts for Weibo): posts with an
+    attitude, "cannot tell", and unlabeled (failed or never sent);
+  - the -2..2 distribution as a % of posts with an attitude, and posts per date.
 
 ### Dates
 
