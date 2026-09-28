@@ -78,7 +78,7 @@ python prepare_data.py clean --platform weibo   # -> OUTPUT_DIR/weibo_daily_opin
 
 ```bash
 uv run python prepare_data.py export   # -> figure_data.parquet / .csv (both platforms, unsmoothed)
-uv run python plot_figures.py          # -> figures/*_comparison_smoothed3d_<date>.pdf (+ plotted points .csv)
+uv run python plot_figures.py          # -> figures/*_comparison_smoothed3d_<date>.pdf (+ .csv: plotted and unsmoothed values)
 uv run python plot_figures.py --window_size 5
 uv run python plot_figures.py --use_smoothing False   # -> *_raw_<date>.pdf (equivalently: --nouse_smoothing)
 ```

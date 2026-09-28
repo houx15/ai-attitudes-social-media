@@ -58,6 +58,7 @@ def plot_metric(
     # platform empty on that row, and a window over merged rows would invent values.
     weibo_values = df[["date", weibo_col]].dropna().set_index("date")[weibo_col]
     twitter_values = df[["date", twitter_col]].dropna().set_index("date")[twitter_col]
+    weibo_raw, twitter_raw = weibo_values, twitter_values
 
     # Sliding window happens here, at draw time only; figure_data stays unsmoothed.
     if use_smoothing:
@@ -113,6 +114,8 @@ def plot_metric(
             "date": df["date"].dt.strftime("%Y-%m-%d").values,
             "weibo": weibo_values.reindex(df["date"]).values,
             "twitter": twitter_values.reindex(df["date"]).values,
+            "weibo_unsmoothed": weibo_raw.reindex(df["date"]).values,
+            "twitter_unsmoothed": twitter_raw.reindex(df["date"]).values,
         }
     )
 

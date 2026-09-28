@@ -28,7 +28,9 @@ def test_plot_metric_without_smoothing_returns_raw_two_lines():
     )
     plt.close(fig)
 
-    assert list(points.columns) == ["date", "weibo", "twitter"]
+    assert list(points.columns) == [
+        "date", "weibo", "twitter", "weibo_unsmoothed", "twitter_unsmoothed"
+    ]
     assert points["weibo"].tolist() == pytest.approx([0.5, 1.0])
     assert points["twitter"].tolist() == pytest.approx([-0.5, -1.0])
 
@@ -57,8 +59,10 @@ def test_main_writes_one_pdf_and_csv_per_metric(tmp_path):
         assert pdf_path.exists()
         assert csv_path.exists()
         saved = pd.read_csv(csv_path)
-        # exactly two lines: weibo vs twitter, no four-line variant
-        assert list(saved.columns) == ["date", "weibo", "twitter"]
+        # exactly two lines (weibo vs twitter, no four-line variant), plus their unsmoothed values
+        assert list(saved.columns) == [
+            "date", "weibo", "twitter", "weibo_unsmoothed", "twitter_unsmoothed"
+        ]
 
 
 @pytest.mark.parametrize("metric_name", ["avg_opinion", "weighted_opinion", "user_avg_opinion"])
@@ -107,6 +111,8 @@ def test_plot_metric_smooths_each_platform_over_its_own_dates_only():
     assert points["date"].tolist() == ["2024-02-29", "2024-03-01", "2024-03-10", "2024-03-20"]
     assert points["weibo"].tolist() == pytest.approx([2.0, nan, 3.0, 4.0], nan_ok=True)
     assert points["twitter"].tolist() == pytest.approx([nan, 1.0, 2.0, 3.0], nan_ok=True)
+    assert points["weibo_unsmoothed"].tolist() == pytest.approx([1.0, nan, 3.0, 5.0], nan_ok=True)
+    assert points["twitter_unsmoothed"].tolist() == pytest.approx([nan, 0.0, 2.0, 4.0], nan_ok=True)
     weibo_line, twitter_line = ax.lines[0], ax.lines[1]
     assert len(weibo_line.get_xdata()) == 3
     assert len(twitter_line.get_xdata()) == 3
