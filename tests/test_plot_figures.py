@@ -28,14 +28,13 @@ def test_plot_metric_without_smoothing_returns_raw_two_lines():
     )
     plt.close(fig)
 
-    assert list(points.columns) == [
-        "date", "weibo", "twitter", "weibo_unsmoothed", "twitter_unsmoothed"
-    ]
-    assert points["weibo"].tolist() == pytest.approx([0.5, 1.0])
-    assert points["twitter"].tolist() == pytest.approx([-0.5, -1.0])
+    assert list(points.columns) == ["date", "weibo-deepseek", "twitter-deepseek"]
+    assert points["weibo-deepseek"].tolist() == pytest.approx([0.5, 1.0])
+    assert points["twitter-deepseek"].tolist() == pytest.approx([-0.5, -1.0])
 
 
 def test_main_writes_one_pdf_and_csv_per_metric(tmp_path):
+    nan = float("nan")
     figure_df = pd.DataFrame({
         "date": pd.date_range("2024-03-01", periods=5).strftime("%Y-%m-%d"),
         "weibo_avg_opinion": [0.1, 0.2, 0.3, 0.4, 0.5],
@@ -49,20 +48,30 @@ def test_main_writes_one_pdf_and_csv_per_metric(tmp_path):
     figure_df.to_parquet(figure_data_path, index=False)
     output_dir = tmp_path / "figures"
 
-    main(figure_data_path=str(figure_data_path), output_dir=str(output_dir))
+    # Earlier GPT-5-mini run: only its Twitter column is used, and only for user_avg_opinion.
+    gpt_path = tmp_path / "gpt.csv"
+    pd.DataFrame({
+        "date": ["2024-03-01", "2024-03-03"],
+        "weibo": [9.0, 9.0],
+        "twitter": [0.7, 0.8],
+    }).to_csv(gpt_path, index=False)
+
+    main(figure_data_path=str(figure_data_path), output_dir=str(output_dir), twitter_gpt_path=str(gpt_path))
 
     for metric_name in ["avg_opinion", "weighted_opinion", "user_avg_opinion"]:
-        # Legacy plot.py naming, minus the retired correction tag.
-        stem = f"{metric_name}_comparison_smoothed3d_{date.today():%Y-%m-%d}"
+        stem = f"{date.today():%Y-%m-%d}-{metric_name}_comparison_smoothed3d"
         pdf_path = output_dir / f"{stem}.pdf"
         csv_path = output_dir / f"{stem}.csv"
         assert pdf_path.exists()
         assert csv_path.exists()
         saved = pd.read_csv(csv_path)
-        # exactly two lines (weibo vs twitter, no four-line variant), plus their unsmoothed values
-        assert list(saved.columns) == [
-            "date", "weibo", "twitter", "weibo_unsmoothed", "twitter_unsmoothed"
-        ]
+        # unsmoothed values only, even though the figure is smoothed
+        assert saved["weibo-deepseek"].tolist() == pytest.approx(figure_df[f"weibo_{metric_name}"].tolist())
+        if metric_name == "user_avg_opinion":
+            assert list(saved.columns) == ["date", "weibo-deepseek", "twitter-deepseek", "twitter-gpt"]
+            assert saved["twitter-gpt"].tolist() == pytest.approx([0.7, nan, 0.8, nan, nan], nan_ok=True)
+        else:
+            assert list(saved.columns) == ["date", "weibo-deepseek", "twitter-deepseek"]
 
 
 @pytest.mark.parametrize("metric_name", ["avg_opinion", "weighted_opinion", "user_avg_opinion"])
@@ -109,13 +118,11 @@ def test_plot_metric_smooths_each_platform_over_its_own_dates_only():
     plt.close(fig)
 
     assert points["date"].tolist() == ["2024-02-29", "2024-03-01", "2024-03-10", "2024-03-20"]
-    assert points["weibo"].tolist() == pytest.approx([2.0, nan, 3.0, 4.0], nan_ok=True)
-    assert points["twitter"].tolist() == pytest.approx([nan, 1.0, 2.0, 3.0], nan_ok=True)
-    assert points["weibo_unsmoothed"].tolist() == pytest.approx([1.0, nan, 3.0, 5.0], nan_ok=True)
-    assert points["twitter_unsmoothed"].tolist() == pytest.approx([nan, 0.0, 2.0, 4.0], nan_ok=True)
+    assert points["weibo-deepseek"].tolist() == pytest.approx([1.0, nan, 3.0, 5.0], nan_ok=True)
+    assert points["twitter-deepseek"].tolist() == pytest.approx([nan, 0.0, 2.0, 4.0], nan_ok=True)
     weibo_line, twitter_line = ax.lines[0], ax.lines[1]
-    assert len(weibo_line.get_xdata()) == 3
-    assert len(twitter_line.get_xdata()) == 3
+    assert list(weibo_line.get_ydata()) == pytest.approx([2.0, 3.0, 4.0])
+    assert list(twitter_line.get_ydata()) == pytest.approx([1.0, 2.0, 3.0])
 
 
 def test_plot_metric_unsmoothed_draws_each_platform_without_gaps():
@@ -129,7 +136,7 @@ def test_plot_metric_unsmoothed_draws_each_platform_without_gaps():
     points = plot_metric(ax, figure_df, "avg_opinion", "Average Opinion", use_smoothing=False)
     plt.close(fig)
 
-    assert points["weibo"].tolist() == pytest.approx([1.0, nan, 3.0], nan_ok=True)
+    assert points["weibo-deepseek"].tolist() == pytest.approx([1.0, nan, 3.0], nan_ok=True)
     assert list(ax.lines[0].get_ydata()) == pytest.approx([1.0, 3.0])
     assert list(ax.lines[1].get_ydata()) == pytest.approx([0.0, 2.0])
 
@@ -160,4 +167,4 @@ def test_main_names_unsmoothed_figures_raw(tmp_path):
 
     main(figure_data_path=str(figure_data_path), output_dir=str(tmp_path / "figures"), use_smoothing=False)
 
-    assert (tmp_path / "figures" / f"avg_opinion_comparison_raw_{date.today():%Y-%m-%d}.pdf").exists()
+    assert (tmp_path / "figures" / f"{date.today():%Y-%m-%d}-avg_opinion_comparison_raw.pdf").exists()

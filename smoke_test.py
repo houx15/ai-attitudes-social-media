@@ -487,13 +487,13 @@ def main():
         f"dates {list(figure_data['date'])}",
     )
     figures = OUTPUT_DIR / "figures"
-    points_files = list(figures.glob("user_avg_opinion_comparison_smoothed3d_*.csv"))
+    points_files = list(figures.glob("*-user_avg_opinion_comparison_smoothed3d.csv"))
     points = pd.read_csv(points_files[0]).set_index("date")
     check(
-        "smoothing invents no value where a platform has no data "
+        "points CSV leaves a platform empty where it has no data "
         "(Twitter on 2024-02-29, Weibo on 2024-03-01)",
-        pd.isna(points.loc["2024-02-29", "twitter"]) and pd.isna(points.loc["2024-03-01", "weibo"])
-        and points["weibo"].notna().sum() == 4 and points["twitter"].notna().sum() == 4,
+        pd.isna(points.loc["2024-02-29", "twitter-deepseek"]) and pd.isna(points.loc["2024-03-01", "weibo-deepseek"])
+        and points["weibo-deepseek"].notna().sum() == 4 and points["twitter-deepseek"].notna().sum() == 4,
     )
     if not live:
         mismatches = []
@@ -510,8 +510,8 @@ def main():
             ", ".join(mismatches),
         )
     check(
-        "Stage 3 wrote a PDF and a points CSV for each of the 3 metrics (legacy file naming)",
-        all(len(list(figures.glob(f"{m}_comparison_smoothed3d_*{ext}"))) == 1
+        "Stage 3 wrote a PDF and a points CSV for each of the 3 metrics (date-first file naming)",
+        all(len(list(figures.glob(f"*-{m}_comparison_smoothed3d{ext}"))) == 1
             for m in METRICS for ext in (".pdf", ".csv")),
     )
 

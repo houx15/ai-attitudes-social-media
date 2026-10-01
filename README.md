@@ -78,10 +78,15 @@ python prepare_data.py clean --platform weibo   # -> OUTPUT_DIR/weibo_daily_opin
 
 ```bash
 uv run python prepare_data.py export   # -> figure_data.parquet / .csv (both platforms, unsmoothed)
-uv run python plot_figures.py          # -> figures/*_comparison_smoothed3d_<date>.pdf (+ .csv: plotted and unsmoothed values)
+uv run python plot_figures.py          # -> figures/<yyyy-mm-dd>-*_comparison_smoothed3d.pdf (+ .csv)
 uv run python plot_figures.py --window_size 5
-uv run python plot_figures.py --use_smoothing False   # -> *_raw_<date>.pdf (equivalently: --nouse_smoothing)
+uv run python plot_figures.py --use_smoothing False   # -> <yyyy-mm-dd>-*_comparison_raw.pdf (equivalently: --nouse_smoothing)
 ```
+
+Each figure's `.csv` holds the **unsmoothed** values behind it: `weibo-deepseek` and
+`twitter-deepseek`. The main result (`user_avg_opinion`) also gets `twitter-gpt`, the
+earlier GPT-5-mini Twitter series (uncorrected, unsmoothed), read from
+`TWITTER_GPT_USER_AVG_PATH` in `config.py` or `--twitter_gpt_path`. It is not drawn.
 
 Don't point `OUTPUT_DIR` at the old `twitterapi-io/sentiment_results`: the daily files
 share the legacy names and would overwrite the published results.
@@ -151,4 +156,4 @@ both stages.
 Everything except the prompt and the LLM caller follows the legacy scripts
 (`youth-analysis/ai_sentiment_analyzer.py`, `twitterapi-io/batch_sentiment_analysis.py`,
 `twitterapi-io/plot.py`): same input files, dates, dedup, empty-text rules, weights,
-three metrics, and figure style and file names.
+three metrics, and figure style (file names now start with the date).

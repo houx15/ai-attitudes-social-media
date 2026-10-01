@@ -32,6 +32,10 @@ TWITTER_FILENAME_PATTERN = "tweets_{date}.parquet"
 # `prepare_data.py clean --platform twitter` always keeps only these US users.
 TWITTER_US_USERIDS_PATH = "YOUR_PATH_HERE"  # e.g. /path/to/user_location_filter/us_userids.json
 
+# Stage 3 only: the earlier GPT-5-mini Twitter user-level means (uncorrected, unsmoothed;
+# columns date, weibo, twitter), added as `twitter-gpt` to the main result's CSV.
+TWITTER_GPT_USER_AVG_PATH = None  # e.g. "../0518/user_avg_opinion_comparison_uncorrected_raw_2026-05-18.csv"
+
 # Output roots
 OUTPUT_DIR = "output"
 

@@ -8,6 +8,11 @@ Usage:
     python plot_figures.py
     python plot_figures.py --window_size 5
     python plot_figures.py --use_smoothing False
+    python plot_figures.py --twitter_gpt_path ../0518/user_avg_opinion_comparison_uncorrected_raw_2026-05-18.csv
+
+Each PDF gets a CSV of the unsmoothed values behind it. The main result
+(user-level mean) also carries the earlier GPT-5-mini Twitter series
+(uncorrected, unsmoothed) as `twitter-gpt` when its CSV is given.
 """
 
 from datetime import datetime
@@ -58,7 +63,7 @@ def plot_metric(
     # platform empty on that row, and a window over merged rows would invent values.
     weibo_values = df[["date", weibo_col]].dropna().set_index("date")[weibo_col]
     twitter_values = df[["date", twitter_col]].dropna().set_index("date")[twitter_col]
-    weibo_raw, twitter_raw = weibo_values, twitter_values
+    weibo_unsmoothed, twitter_unsmoothed = weibo_values, twitter_values
 
     # Sliding window happens here, at draw time only; figure_data stays unsmoothed.
     if use_smoothing:
@@ -112,10 +117,8 @@ def plot_metric(
     return pd.DataFrame(
         {
             "date": df["date"].dt.strftime("%Y-%m-%d").values,
-            "weibo": weibo_values.reindex(df["date"]).values,
-            "twitter": twitter_values.reindex(df["date"]).values,
-            "weibo_unsmoothed": weibo_raw.reindex(df["date"]).values,
-            "twitter_unsmoothed": twitter_raw.reindex(df["date"]).values,
+            "weibo-deepseek": weibo_unsmoothed.reindex(df["date"]).values,
+            "twitter-deepseek": twitter_unsmoothed.reindex(df["date"]).values,
         }
     )
 
@@ -125,17 +128,27 @@ def main(
     output_dir: Optional[str] = None,
     window_size: int = 3,
     use_smoothing: bool = True,
+    twitter_gpt_path: Optional[str] = None,
 ):
     if figure_data_path is None or output_dir is None:
         import config
 
         figure_data_path = figure_data_path or f"{config.OUTPUT_DIR}/figure_data.parquet"
         output_dir = output_dir or f"{config.OUTPUT_DIR}/figures"
+        twitter_gpt_path = twitter_gpt_path or getattr(config, "TWITTER_GPT_USER_AVG_PATH", None)
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     figure_df = pd.read_parquet(figure_data_path)
 
-    # Legacy plot.py naming, minus the retired cross-lingual correction tag.
+    twitter_gpt = None
+    if twitter_gpt_path:
+        # Earlier GPT-5-mini run (uncorrected, unsmoothed): columns date, weibo, twitter.
+        gpt_df = pd.read_csv(twitter_gpt_path, dtype={"date": str})
+        twitter_gpt = gpt_df.set_index("date")["twitter"]
+    else:
+        print("No twitter_gpt_path given: the user_avg_opinion CSV will have no twitter-gpt column")
+
+    # Date first (yyyy-mm-dd-name), minus the retired cross-lingual correction tag.
     smoothing_tag = f"_smoothed{window_size}d" if use_smoothing else "_raw"
     today_str = datetime.now().strftime("%Y-%m-%d")
 
@@ -146,10 +159,12 @@ def main(
         )
         plt.subplots_adjust(left=0.12, right=0.95, top=0.95, bottom=0.15)
 
-        output_path = Path(output_dir) / f"{metric_name}_comparison{smoothing_tag}_{today_str}.pdf"
+        output_path = Path(output_dir) / f"{today_str}-{metric_name}_comparison{smoothing_tag}.pdf"
         fig.savefig(output_path, format="pdf", bbox_inches="tight")
         plt.close(fig)
 
+        if metric_name == "user_avg_opinion" and twitter_gpt is not None:
+            points["twitter-gpt"] = twitter_gpt.reindex(points["date"]).values
         points.to_csv(output_path.with_suffix(".csv"), index=False)
         print(f"Saved {output_path}")
 
