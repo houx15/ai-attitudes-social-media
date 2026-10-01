@@ -158,4 +158,6 @@ both stages.
 Everything except the prompt and the LLM caller follows the legacy scripts
 (`youth-analysis/ai_sentiment_analyzer.py`, `twitterapi-io/batch_sentiment_analysis.py`,
 `twitterapi-io/plot.py`): same input files, dates, dedup, empty-text rules, weights,
-three metrics, and figure style (file names now start with the date).
+and three metrics. Figures follow the mentor's replot style (broken y-axis with the
+-2 "Concerned" / 2 "Excited" scale ends, `Mar 2024` ticks, frameless legend), and file
+names start with the date.

@@ -16,6 +16,7 @@ Each PDF gets a CSV of the unsmoothed values behind it. The main result
 fourth figure draws it as a dashed third line for comparison.
 """
 
+import math
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -28,16 +29,77 @@ import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import pandas as pd
 
-plt.rcParams["font.size"] = 12
-
-WEIBO_COLOR = "#ff7333"
-TWITTER_COLOR = "#20AEE6"
+WEIBO_COLOR = "tab:orange"
+TWITTER_COLOR = "tab:blue"
+LINE_WIDTH = 5
+FIGSIZE = (6.4, 4.8)
+TICK_STEP = 0.5
+SCALE_END = 2  # the attitude scale runs -2 (concerned) .. 2 (excited)
 
 METRICS = [
-    ("avg_opinion", "Average Opinion"),
-    ("weighted_opinion", "LikeCount Weighted Opinion"),
-    ("user_avg_opinion", "User-level Average Opinion"),
+    ("avg_opinion", "Post-level attitude toward AI"),
+    ("weighted_opinion", "Like-weighted attitude toward AI"),
+    ("user_avg_opinion", "Social media attitude toward AI"),
 ]
+
+
+def place_legend(ax) -> None:
+    """Frameless legend at the top left, as in the mentor's replot; if it would
+    cover a line there, let matplotlib pick the emptiest spot instead."""
+    legend = ax.legend(loc="upper left", bbox_to_anchor=(0.04, 0.94), frameon=False, handlelength=3)
+    ax.figure.canvas.draw()
+    box = legend.get_window_extent()
+    for line in ax.get_lines():
+        if not line.get_label().startswith("_") and len(line.get_xdata()):
+            points = line.get_transform().transform(line.get_xydata())
+            if box.count_contains(points):
+                ax.legend(loc="best", frameon=False, handlelength=3)
+                return
+
+
+def draw_attitude_axis(ax, data_min: float, data_max: float) -> None:
+    """Y-axis zoomed on the data, ticks every 0.5, with the scale ends (-2
+    "Concerned", 2 "Excited") shown past a break mark, and 0 marked "Neutral"."""
+    # A line may poke slightly past the outer tick (e.g. -0.01 under 0.0).
+    slack = 0.1 * TICK_STEP
+    low = min(math.floor((data_min + slack) / TICK_STEP) * TICK_STEP, 0.0)
+    high = max(math.ceil((data_max - slack) / TICK_STEP) * TICK_STEP, 0.0)
+    gap = 0.1 * (high - low or 1.0)  # room between the data range and a scale end
+
+    ticks = [low + i * TICK_STEP for i in range(round((high - low) / TICK_STEP) + 1)]
+    labels = [f"{t:.1f}" for t in ticks]
+    breaks = []
+    bottom, top = low, high
+    if low > -SCALE_END:
+        bottom = low - gap
+        ticks.insert(0, bottom)
+        labels.insert(0, f"{-SCALE_END:.1f}")
+        breaks.append(low - gap / 2)
+    if high < SCALE_END:
+        top = high + gap
+        ticks.append(top)
+        labels.append(f"{SCALE_END:.1f}")
+        breaks.append(high + gap / 2)
+    pad = 0.03 * (top - bottom)
+    ax.set_ylim(bottom - pad, top + pad)
+    ax.set_yticks(ticks, labels)
+
+    # The left spine is redrawn in pieces so it can show a // at each break.
+    ax.spines["left"].set_visible(False)
+    trans = ax.get_yaxis_transform()  # x in axes units, y in data units
+    half = 0.012 * (top - bottom + 2 * pad)
+    edges = [bottom - pad] + [y for b in sorted(breaks) for y in (b - half, b + half)] + [top]
+    for y0, y1 in zip(edges[::2], edges[1::2]):
+        ax.plot([0, 0], [y0, y1], color="black", linewidth=0.8, transform=trans, clip_on=False)
+    for b in breaks:
+        for y in (b - half, b + half):
+            ax.plot([-0.012, 0.012], [y - half / 2, y + half / 2], color="black", linewidth=0.8,
+                    transform=trans, clip_on=False)
+
+    for y, text in ((top if high < SCALE_END else SCALE_END, "Excited"), (0.0, "Neutral"),
+                    (bottom if low > -SCALE_END else -SCALE_END, "Concerned")):
+        if bottom <= y <= top:
+            ax.text(0.012, y, text, color="grey", transform=trans, va="center", ha="left")
 
 
 def apply_sliding_window(series: pd.Series, window_size: int = 3) -> pd.Series:
@@ -81,52 +143,25 @@ def plot_metric(
         gpt_unsmoothed = gpt_unsmoothed.sort_index()
         gpt_values = apply_sliding_window(gpt_unsmoothed, window_size) if use_smoothing else gpt_unsmoothed
 
-    model_tag = " (DeepSeek)" if gpt_values is not None else ""
-    ax.plot(weibo_values.index, weibo_values.values, color=WEIBO_COLOR, linewidth=5, alpha=0.7, label=f"Weibo, China{model_tag}")
-    ax.plot(twitter_values.index, twitter_values.values, color=TWITTER_COLOR, linewidth=5, alpha=0.7, label=f"Twitter, USA{model_tag}")
+    # Style of the mentor's replot: thick solid lines, GPT dotted, frameless legend.
+    model_tag = ", DeepSeek" if gpt_values is not None else ""
+    ax.plot(weibo_values.index, weibo_values.values, color=WEIBO_COLOR, linewidth=LINE_WIDTH,
+            label=f"China (Weibo{model_tag})")
+    ax.plot(twitter_values.index, twitter_values.values, color=TWITTER_COLOR, linewidth=LINE_WIDTH,
+            label=f"United States (Twitter{model_tag})")
     if gpt_values is not None:
-        ax.plot(gpt_values.index, gpt_values.values, color=TWITTER_COLOR, linewidth=3, linestyle="--", label="Twitter, USA (GPT-5-mini)")
+        ax.plot(gpt_values.index, gpt_values.values, color=TWITTER_COLOR, linewidth=LINE_WIDTH,
+                linestyle=":", label="United States (Twitter, GPT)")
 
-    if metric_name == "weighted_opinion":
-        ax.axhline(y=0, color="grey", linestyle="--", linewidth=2, zorder=0)
-
-    # "AI benefits" / "AI concerns" annotations near the top/bottom of the
-    # y-range, at the left edge — same positioning as the legacy plot.py.
     all_values = pd.concat([v for v in (weibo_values, twitter_values, gpt_values) if v is not None])
     if len(all_values) > 0:
-        x_min = df["date"].min()
-        x_max = df["date"].max()
-        x_min = x_min - (x_max - x_min) * 0.03
+        draw_attitude_axis(ax, all_values.min(), all_values.max())
 
-        y_max = all_values.max()
-        y_min = all_values.min()
-        y_range = y_max - y_min
-        y_padding = max(0.1 * y_range, 0.1)  # at least 10% padding or 0.1 unit
-        ax.set_ylim(y_min - y_padding, y_max + y_padding)
-
-        y_top = y_max + 0.05 * y_range
-        y_bottom = y_min - 0.05 * y_range
-        ax.text(
-            x_min, y_top, "AI benefits", fontsize=10, color="black",
-            verticalalignment="top", horizontalalignment="left",
-        )
-        ax.text(
-            x_min, y_bottom, "AI concerns", fontsize=10, color="black",
-            verticalalignment="bottom", horizontalalignment="left",
-        )
-        if metric_name == "weighted_opinion":
-            ax.text(
-                x_min, 0.05, "neutral", fontsize=10, color="grey",
-                verticalalignment="center", horizontalalignment="left",
-            )
-
-    ax.set_xlabel("Time", fontsize=12, fontweight="bold")
-    ax.set_ylabel(ylabel, fontsize=12, fontweight="bold")
-    ax.xaxis.set_major_locator(mdates.MonthLocator())
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
-    plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha="right")
-    ax.legend(loc="lower right", fontsize=10)
-    ax.grid(True, alpha=0.3, linestyle="--")
+    ax.set_ylabel(ylabel)
+    ax.xaxis.set_major_locator(mdates.MonthLocator(bymonth=[3, 7, 11]))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
+    ax.spines[["top", "right"]].set_visible(False)
+    place_legend(ax)
 
     points = pd.DataFrame(
         {
@@ -175,12 +210,11 @@ def main(
         figures.append(("user_avg_opinion", dict(METRICS)["user_avg_opinion"], "user_avg_opinion_with_gpt", twitter_gpt))
 
     for metric_name, ylabel, name, gpt_line in figures:
-        fig, ax = plt.subplots(figsize=(10, 6))
+        fig, ax = plt.subplots(figsize=FIGSIZE)
         points = plot_metric(
             ax, figure_df, metric_name, ylabel, window_size=window_size, use_smoothing=use_smoothing,
             twitter_gpt=gpt_line,
         )
-        plt.subplots_adjust(left=0.12, right=0.95, top=0.95, bottom=0.15)
 
         output_path = Path(output_dir) / f"{today_str}-{name}_comparison{smoothing_tag}.pdf"
         fig.savefig(output_path, format="pdf", bbox_inches="tight")

@@ -95,7 +95,7 @@ def test_main_without_gpt_path_writes_only_the_three_figures(tmp_path):
     assert len(list((tmp_path / "figures").glob("*.pdf"))) == 3
 
 
-def test_plot_metric_draws_gpt_twitter_as_a_dashed_third_line():
+def test_plot_metric_draws_gpt_twitter_as_a_dotted_third_line():
     nan = float("nan")
     figure_df = pd.DataFrame({
         "date": ["2024-02-29", "2024-03-01", "2024-03-10", "2024-03-20"],
@@ -110,42 +110,53 @@ def test_plot_metric_draws_gpt_twitter_as_a_dashed_third_line():
     gpt_y = list(ax.lines[2].get_ydata())
     plt.close(fig)
 
-    assert labels == ["Weibo, China (DeepSeek)", "Twitter, USA (DeepSeek)", "Twitter, USA (GPT-5-mini)"]
-    assert styles == ["-", "-", "--"]
+    assert labels[:3] == [
+        "China (Weibo, DeepSeek)", "United States (Twitter, DeepSeek)", "United States (Twitter, GPT)"
+    ]
+    assert styles[:3] == ["-", "-", ":"]
     # smoothed over its own dates, like the other lines
     assert gpt_y == pytest.approx([1.5, 3.0, 4.0])
     # the CSV keeps it unsmoothed
     assert points["twitter-gpt"].tolist() == pytest.approx([nan, 1.0, 2.0, 6.0], nan_ok=True)
 
 
-@pytest.mark.parametrize("metric_name", ["avg_opinion", "weighted_opinion", "user_avg_opinion"])
-def test_plot_metric_draws_benefits_and_concerns_annotations(metric_name):
-    # (G) spec: same visual style as legacy plot.py, incl. the "AI benefits" /
-    # "AI concerns" annotations near the top/bottom of the y-range, all metrics.
+def _y_ticks(ax):
+    return [(round(t, 3), label.get_text()) for t, label in zip(ax.get_yticks(), ax.get_yticklabels())]
+
+
+def test_attitude_axis_zooms_on_data_and_shows_scale_ends_past_breaks():
+    # Mentor's style: ticks every 0.5 around the data, -2 "Concerned" / 2 "Excited"
+    # past a break, 0 marked "Neutral". A -0.01 dip does not add a -0.5 tick.
     figure_df = pd.DataFrame({
-        "date": pd.date_range("2024-03-01", periods=5).strftime("%Y-%m-%d"),
-        f"weibo_{metric_name}": [0.1, 0.2, 0.3, 0.4, 0.5],
-        f"twitter_{metric_name}": [-0.1, -0.2, -0.3, -0.4, -0.5],
+        "date": ["2024-03-01", "2024-03-10", "2024-03-20"],
+        "weibo_user_avg_opinion": [0.5, 0.6, 0.87],
+        "twitter_user_avg_opinion": [0.2, -0.01, 0.3],
     })
     fig, ax = plt.subplots()
-    plot_metric(ax, figure_df, metric_name, "label", use_smoothing=False)
-    texts = {t.get_text(): t for t in ax.texts}
-    y_low, y_high = ax.get_ylim()
+    plot_metric(ax, figure_df, "user_avg_opinion", "label", use_smoothing=False)
+    ticks = _y_ticks(ax)
+    texts = {t.get_text(): t.get_position()[1] for t in ax.texts}
     plt.close(fig)
 
-    expected = {"AI benefits", "AI concerns"}
-    if metric_name == "weighted_opinion":
-        # legacy plot.py also labels the y=0 dashed line on this figure only
-        expected.add("neutral")
-        assert texts["neutral"].get_position()[1] == pytest.approx(0.05)
-    assert len(ax.texts) == len(expected)
-    assert set(texts) == expected
-    benefits_y = texts["AI benefits"].get_position()[1]
-    concerns_y = texts["AI concerns"].get_position()[1]
-    # benefits near the top, concerns near the bottom, both inside the axes
-    assert concerns_y < 0 < benefits_y
-    assert y_low < concerns_y and benefits_y < y_high
-    assert benefits_y > 0.5 and concerns_y < -0.5
+    assert [label for _, label in ticks] == ["-2.0", "0.0", "0.5", "1.0", "2.0"]
+    assert [t for t, _ in ticks][1:4] == [0.0, 0.5, 1.0]
+    assert texts["Neutral"] == 0.0
+    assert texts["Excited"] == ticks[-1][0] and texts["Concerned"] == ticks[0][0]
+    assert not ax.spines["top"].get_visible() and not ax.spines["right"].get_visible()
+
+
+def test_attitude_axis_covers_negative_values():
+    figure_df = pd.DataFrame({
+        "date": ["2024-03-01", "2024-03-10"],
+        "weibo_weighted_opinion": [0.9, 1.2],
+        "twitter_weighted_opinion": [-0.6, 0.3],
+    })
+    fig, ax = plt.subplots()
+    plot_metric(ax, figure_df, "weighted_opinion", "label", use_smoothing=False)
+    labels = [label for _, label in _y_ticks(ax)]
+    plt.close(fig)
+
+    assert labels == ["-2.0", "-1.0", "-0.5", "0.0", "0.5", "1.0", "1.5", "2.0"]
 
 
 def test_plot_metric_smooths_each_platform_over_its_own_dates_only():
@@ -185,19 +196,24 @@ def test_plot_metric_unsmoothed_draws_each_platform_without_gaps():
     assert list(ax.lines[1].get_ydata()) == pytest.approx([0.0, 2.0])
 
 
-def test_plot_matches_legacy_font_size_and_tick_rotation():
+def test_plot_uses_month_year_ticks_and_a_frameless_legend():
     figure_df = pd.DataFrame({
-        "date": ["2024-03-01", "2024-04-01", "2024-05-01"],
+        "date": ["2024-03-01", "2024-07-01", "2024-11-01"],
         "weibo_avg_opinion": [0.1, 0.2, 0.3],
         "twitter_avg_opinion": [-0.1, -0.2, -0.3],
     })
     fig, ax = plt.subplots()
     plot_metric(ax, figure_df, "avg_opinion", "label")
+    fig.canvas.draw()
+    tick_labels = [t.get_text() for t in ax.get_xticklabels()]
     rotations = {t.get_rotation() for t in ax.get_xticklabels()}
+    legend = ax.get_legend()
     plt.close(fig)
 
-    assert plt.rcParams["font.size"] == 12
-    assert rotations == {45.0}
+    assert tick_labels == ["Mar 2024", "Jul 2024", "Nov 2024"]
+    assert rotations == {0.0}
+    assert not legend.get_frame_on()
+    assert [t.get_text() for t in legend.get_texts()] == ["China (Weibo)", "United States (Twitter)"]
 
 
 def test_main_names_unsmoothed_figures_raw(tmp_path):
