@@ -86,7 +86,9 @@ uv run python plot_figures.py --use_smoothing False   # -> <yyyy-mm-dd>-*_compar
 Each figure's `.csv` holds the **unsmoothed** values behind it: `weibo-deepseek` and
 `twitter-deepseek`. The main result (`user_avg_opinion`) also gets `twitter-gpt`, the
 earlier GPT-5-mini Twitter series (uncorrected, unsmoothed), read from
-`TWITTER_GPT_USER_AVG_PATH` in `config.py` or `--twitter_gpt_path`. It is not drawn.
+`TWITTER_GPT_USER_AVG_PATH` in `config.py` or `--twitter_gpt_path`. With it set, a fourth
+figure, `<yyyy-mm-dd>-user_avg_opinion_with_gpt_comparison_*.pdf`, draws it as a dashed
+third line next to the two DeepSeek lines for comparison.
 
 Don't point `OUTPUT_DIR` at the old `twitterapi-io/sentiment_results`: the daily files
 share the legacy names and would overwrite the published results.

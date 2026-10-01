@@ -73,6 +73,50 @@ def test_main_writes_one_pdf_and_csv_per_metric(tmp_path):
         else:
             assert list(saved.columns) == ["date", "weibo-deepseek", "twitter-deepseek"]
 
+    # Fourth figure: same main result plus the GPT line, same unsmoothed CSV.
+    stem = f"{date.today():%Y-%m-%d}-user_avg_opinion_with_gpt_comparison_smoothed3d"
+    assert (output_dir / f"{stem}.pdf").exists()
+    saved = pd.read_csv(output_dir / f"{stem}.csv")
+    assert list(saved.columns) == ["date", "weibo-deepseek", "twitter-deepseek", "twitter-gpt"]
+    assert saved["twitter-gpt"].tolist() == pytest.approx([0.7, nan, 0.8, nan, nan], nan_ok=True)
+
+
+def test_main_without_gpt_path_writes_only_the_three_figures(tmp_path):
+    figure_df = pd.DataFrame({
+        "date": ["2024-03-01", "2024-03-10"],
+        **{f"{p}_{m}": [0.1, 0.2] for p in ("weibo", "twitter")
+           for m in ("avg_opinion", "weighted_opinion", "user_avg_opinion")},
+    })
+    figure_data_path = tmp_path / "figure_data.parquet"
+    figure_df.to_parquet(figure_data_path, index=False)
+
+    main(figure_data_path=str(figure_data_path), output_dir=str(tmp_path / "figures"))
+
+    assert len(list((tmp_path / "figures").glob("*.pdf"))) == 3
+
+
+def test_plot_metric_draws_gpt_twitter_as_a_dashed_third_line():
+    nan = float("nan")
+    figure_df = pd.DataFrame({
+        "date": ["2024-02-29", "2024-03-01", "2024-03-10", "2024-03-20"],
+        "weibo_user_avg_opinion": [1.0, nan, 3.0, 5.0],
+        "twitter_user_avg_opinion": [nan, 0.0, 2.0, 4.0],
+    })
+    gpt = pd.Series([1.0, 2.0, 6.0], index=["2024-03-01", "2024-03-10", "2024-03-20"])
+    fig, ax = plt.subplots()
+    points = plot_metric(ax, figure_df, "user_avg_opinion", "label", window_size=3, twitter_gpt=gpt)
+    labels = [line.get_label() for line in ax.lines]
+    styles = [line.get_linestyle() for line in ax.lines]
+    gpt_y = list(ax.lines[2].get_ydata())
+    plt.close(fig)
+
+    assert labels == ["Weibo, China (DeepSeek)", "Twitter, USA (DeepSeek)", "Twitter, USA (GPT-5-mini)"]
+    assert styles == ["-", "-", "--"]
+    # smoothed over its own dates, like the other lines
+    assert gpt_y == pytest.approx([1.5, 3.0, 4.0])
+    # the CSV keeps it unsmoothed
+    assert points["twitter-gpt"].tolist() == pytest.approx([nan, 1.0, 2.0, 6.0], nan_ok=True)
+
 
 @pytest.mark.parametrize("metric_name", ["avg_opinion", "weighted_opinion", "user_avg_opinion"])
 def test_plot_metric_draws_benefits_and_concerns_annotations(metric_name):
